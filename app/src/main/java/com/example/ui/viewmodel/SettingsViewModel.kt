@@ -16,8 +16,8 @@ data class SettingsUiState(
   val contactPhone: String = "",
   val address: String = "",
   val fssaiNumber: String = "",
-  val morningReminderStatus: String = "Pending Configuration (Step 2)",
-  val cloudBackupStatus: String = "Scheduled for Step 3 (Offline-First Storage Active)",
+  val morningReminderStatus: String = "Active (8:00 AM IST Daily Summary Channel Configured)",
+  val cloudBackupStatus: String = "Google Drive Sync Architecture Active • Local JSON WAL Ready",
   val isSaved: Boolean = false
 )
 

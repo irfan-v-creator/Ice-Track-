@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.ReceiptLong
@@ -95,6 +96,13 @@ fun MoreScreen(
       subtitle = "Vehicle fuel, maintenance, cold storage electricity bills",
       icon = Icons.Default.ReceiptLong,
       onClick = { onNavigate(Screen.EXPENSES) }
+    )
+
+    MoreMenuItem(
+      title = "Reports & Analytics",
+      subtitle = "P&L Statements, Sales/Purchase Trends, CSV/Excel Exports",
+      icon = Icons.Default.Assessment,
+      onClick = { onNavigate(Screen.REPORTS) }
     )
 
     MoreMenuItem(

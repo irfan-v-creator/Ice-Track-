@@ -6,8 +6,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,6 +21,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -38,6 +41,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -47,7 +52,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -87,9 +94,12 @@ fun PurchaseManagementScreen(
   var showNewInvoiceDialog by remember { mutableStateOf(false) }
   var showPaymentDialog by remember { mutableStateOf<Supplier?>(null) }
   var selectedInvoiceForDetail by remember { mutableStateOf<PurchaseInvoice?>(null) }
+  val snackbarHostState = remember { SnackbarHostState() }
+  val scope = rememberCoroutineScope()
 
   Scaffold(
     containerColor = FigmaBackground,
+    snackbarHost = { SnackbarHost(snackbarHostState) },
     floatingActionButton = {
       FloatingActionButton(
         onClick = { showNewInvoiceDialog = true },
@@ -117,17 +127,25 @@ fun PurchaseManagementScreen(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
       ) {
-        Column {
+        Column(
+          modifier = Modifier
+            .weight(1f)
+            .padding(end = 12.dp)
+        ) {
           Text(
-            text = "Purchases & Inward Stock",
+            text = "Purchases & Inward",
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
-            color = FigmaInk
+            color = FigmaInk,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
           )
           Text(
-            text = "Receive batches, update stock & supplier payables",
+            text = "Receive batches & payables",
             style = MaterialTheme.typography.bodySmall,
-            color = FigmaMuted
+            color = FigmaMuted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
           )
         }
 
@@ -135,14 +153,28 @@ fun PurchaseManagementScreen(
           onClick = {
             if (suppliers.isNotEmpty()) {
               showPaymentDialog = suppliers.first()
+            } else {
+              scope.launch {
+                snackbarHostState.showSnackbar("Add a supplier first to record a payment.")
+              }
             }
           },
           colors = ButtonDefaults.buttonColors(containerColor = FigmaSoftTeal, contentColor = FigmaTeal),
-          shape = RoundedCornerShape(8.dp)
+          shape = RoundedCornerShape(8.dp),
+          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+          modifier = Modifier
+            .defaultMinSize(minHeight = 48.dp)
+            .testTag("pay_supplier_header_btn")
         ) {
           Icon(Icons.Default.Payments, contentDescription = null, modifier = Modifier.size(16.dp))
-          Spacer(modifier = Modifier.width(4.dp))
-          Text("Pay Supplier", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+          Spacer(modifier = Modifier.width(6.dp))
+          Text(
+            text = "Pay Supplier",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            softWrap = false
+          )
         }
       }
 
@@ -235,17 +267,25 @@ fun PurchaseInvoiceCard(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
       ) {
-        Column {
+        Column(
+          modifier = Modifier
+            .weight(1f)
+            .padding(end = 8.dp)
+        ) {
           Text(
             text = "Invoice #${invoice.invoiceNumber}",
             fontWeight = FontWeight.Bold,
             fontSize = 15.sp,
-            color = FigmaInk
+            color = FigmaInk,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
           )
           Text(
             text = "$supplierName · ${SubledgerCalculationEngine.formatDate(invoice.invoiceDate)}",
             fontSize = 12.sp,
-            color = FigmaMuted
+            color = FigmaMuted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
           )
         }
 
@@ -474,9 +514,26 @@ fun CreatePurchaseInvoiceDialog(
               horizontalArrangement = Arrangement.SpaceBetween,
               verticalAlignment = Alignment.CenterVertically
             ) {
-              Column {
-                Text(text = "${item.product.name} (Batch: ${item.batchNumber})", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = FigmaInk)
-                Text(text = "${item.quantityPieces} pcs @ ₹${item.costPerPiecePaise / 100.0} = ₹${item.lineTotalPaise / 100.0}", fontSize = 10.sp, color = FigmaMuted)
+              Column(
+                modifier = Modifier
+                  .weight(1f)
+                  .padding(end = 8.dp)
+              ) {
+                Text(
+                  text = "${item.product.name} (Batch: ${item.batchNumber})",
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = FigmaInk,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                  text = "${item.quantityPieces} pcs @ ₹${item.costPerPiecePaise / 100.0} = ₹${item.lineTotalPaise / 100.0}",
+                  fontSize = 10.sp,
+                  color = FigmaMuted,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis
+                )
               }
               IconButton(onClick = { items.removeAt(idx) }, modifier = Modifier.size(24.dp)) {
                 Icon(Icons.Default.Delete, contentDescription = "Remove", tint = FigmaRed, modifier = Modifier.size(16.dp))

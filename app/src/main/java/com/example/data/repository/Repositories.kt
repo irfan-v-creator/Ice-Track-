@@ -307,6 +307,10 @@ class InventoryRepository(private val db: IceTrackDatabase) {
     list.map { it.toDomain() }
   }
 
+  val allActiveBatches: Flow<List<ProductBatch>> = batchDao.getAllActiveBatches().map { list ->
+    list.map { it.toDomain() }
+  }
+
   fun getMovementsForProduct(productId: Long): Flow<List<StockMovement>> {
     return movementDao.getMovementsForProduct(productId).map { list ->
       list.map { it.toDomain() }
@@ -573,6 +577,10 @@ class SalesRepository(private val db: IceTrackDatabase) {
     return itemDao.getItemsForInvoice(invoiceId).map { list ->
       list.map { it.toDomain() }
     }
+  }
+
+  val allSalesItems: Flow<List<SalesInvoiceItem>> = itemDao.getAllItems().map { list ->
+    list.map { it.toDomain() }
   }
 
   data class RequestedSaleLine(

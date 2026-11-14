@@ -62,6 +62,7 @@ import com.example.ui.screens.OperationsPlaceholderScreen
 import com.example.ui.screens.ProductListScreen
 import com.example.ui.screens.PurchaseManagementScreen
 import com.example.ui.screens.SalesBillingScreen
+import com.example.ui.screens.ReportsAnalyticsScreen
 import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.SubledgerScreen
 import com.example.ui.screens.SupplierListScreen
@@ -80,6 +81,7 @@ import com.example.ui.viewmodel.ExpenseViewModel
 import com.example.ui.viewmodel.InventoryViewModel
 import com.example.ui.viewmodel.ProductViewModel
 import com.example.ui.viewmodel.PurchaseViewModel
+import com.example.ui.viewmodel.ReportsViewModel
 import com.example.ui.viewmodel.SalesViewModel
 import com.example.ui.viewmodel.SettingsViewModel
 import com.example.ui.viewmodel.SupplierViewModel
@@ -138,6 +140,18 @@ class MainActivity : ComponentActivity() {
     val expenseViewModel by viewModels<ExpenseViewModel> {
       ExpenseViewModel.Factory(expenseRepo)
     }
+    val reportsViewModel by viewModels<ReportsViewModel> {
+      ReportsViewModel.Factory(
+        salesRepo = salesRepo,
+        purchaseRepo = purchaseRepo,
+        productRepo = productRepo,
+        customerRepo = customerRepo,
+        supplierRepo = supplierRepo,
+        inventoryRepo = inventoryRepo,
+        expenseRepo = expenseRepo,
+        subledgerRepo = subledgerRepo
+      )
+    }
 
     setContent {
       IceTrackTheme {
@@ -151,6 +165,7 @@ class MainActivity : ComponentActivity() {
           purchaseViewModel = purchaseViewModel,
           salesViewModel = salesViewModel,
           expenseViewModel = expenseViewModel,
+          reportsViewModel = reportsViewModel,
           subledgerRepo = subledgerRepo
         )
       }
@@ -170,6 +185,7 @@ fun MainAppContent(
   purchaseViewModel: PurchaseViewModel,
   salesViewModel: SalesViewModel,
   expenseViewModel: ExpenseViewModel,
+  reportsViewModel: ReportsViewModel,
   subledgerRepo: SubledgerRepository
 ) {
   var currentScreen by remember { mutableStateOf(Screen.DASHBOARD) }
@@ -373,11 +389,7 @@ fun MainAppContent(
         Screen.SALES -> SalesBillingScreen(viewModel = salesViewModel)
         Screen.PURCHASE -> PurchaseManagementScreen(viewModel = purchaseViewModel)
         Screen.EXPENSES -> ExpensesScreen(viewModel = expenseViewModel)
-        Screen.REPORTS -> OperationsPlaceholderScreen(
-          moduleName = "Step 3 Reports & Analytics",
-          description = "Business gross margin, supplier statements, net profit after expenses, and tax/accounting summaries are scheduled for Step 3.",
-          icon = Icons.Default.Assessment
-        )
+        Screen.REPORTS -> ReportsAnalyticsScreen(viewModel = reportsViewModel)
       }
     }
   }

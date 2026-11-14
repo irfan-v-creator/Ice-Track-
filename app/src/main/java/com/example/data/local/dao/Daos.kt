@@ -214,6 +214,9 @@ interface ProductBatchDao {
   @Query("SELECT * FROM product_batches WHERE isActive = 1 AND currentQuantityPieces > 0 ORDER BY expiryDate ASC")
   fun getAllStockedBatches(): Flow<List<ProductBatchEntity>>
 
+  @Query("SELECT * FROM product_batches WHERE isActive = 1 ORDER BY expiryDate ASC, purchaseDate ASC")
+  fun getAllActiveBatches(): Flow<List<ProductBatchEntity>>
+
   @Query("SELECT * FROM product_batches WHERE id = :batchId")
   suspend fun getById(batchId: Long): ProductBatchEntity?
 
@@ -309,6 +312,12 @@ interface SalesInvoiceItemDao {
 
   @Query("SELECT * FROM sales_invoice_items WHERE salesInvoiceId = :invoiceId")
   suspend fun getItemsForInvoiceSync(invoiceId: Long): List<SalesInvoiceItemEntity>
+
+  @Query("SELECT * FROM sales_invoice_items")
+  fun getAllItems(): Flow<List<SalesInvoiceItemEntity>>
+
+  @Query("SELECT * FROM sales_invoice_items")
+  suspend fun getAllItemsSync(): List<SalesInvoiceItemEntity>
 
   @Insert(onConflict = OnConflictStrategy.ABORT)
   suspend fun insertAll(items: List<SalesInvoiceItemEntity>)
