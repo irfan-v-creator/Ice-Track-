@@ -684,16 +684,21 @@ object ExportDocumentService {
     sb.append("Shop Name,Owner Name,Phone Number,Opening Balance (INR),Current Balance Due (INR),Credit Limit (INR)\n")
     val entriesByCust = entries.filter { !it.isReversed && it.partyType == PartyType.CUSTOMER }.groupBy { it.partyId }
     var totalDue = 0L
+    var totalAdvance = 0L
     for (c in allCustomers) {
       val custEntries = entriesByCust[c.id] ?: emptyList()
       val curBalance = SubledgerCalculationEngine.calculateCustomerBalance(custEntries, endDate)
-      totalDue += curBalance
+      totalDue += curBalance.coerceAtLeast(0L)
+      totalAdvance += (-curBalance).coerceAtLeast(0L)
       val op = SubledgerCalculationEngine.formatPaise(c.openingBalancePaise, false)
       val bal = SubledgerCalculationEngine.formatPaise(curBalance, false)
       val limit = SubledgerCalculationEngine.formatPaise(c.creditLimitPaise, false)
       sb.append("${csvCell(c.shopName)},${csvCell(c.ownerName)},${csvCell(c.phoneNumber)},${csvCell(op)},${csvCell(bal)},${csvCell(limit)}\n")
     }
     sb.append("\nTOTAL RECEIVABLES,,,,${csvCell(SubledgerCalculationEngine.formatPaise(totalDue, false))},\n")
+    if (totalAdvance > 0L) {
+      sb.append("TOTAL ADVANCES,,,,${csvCell(SubledgerCalculationEngine.formatPaise(totalAdvance, false))},\n")
+    }
     return sb.toString()
   }
 
@@ -789,9 +794,11 @@ object ExportDocumentService {
     } else {
       val entriesByCust = entries.filter { !it.isReversed && it.partyType == PartyType.CUSTOMER }.groupBy { it.partyId }
       var totalDue = 0L
+      var totalAdvance = 0L
       val rows = allCustomers.map { c ->
         val curBalance = SubledgerCalculationEngine.calculateCustomerBalance(entriesByCust[c.id] ?: emptyList(), endDate)
-        totalDue += curBalance
+        totalDue += curBalance.coerceAtLeast(0L)
+        totalAdvance += (-curBalance).coerceAtLeast(0L)
         listOf(
           XlsxCell.Text(c.shopName),
           XlsxCell.Text(c.ownerName),
@@ -801,22 +808,35 @@ object ExportDocumentService {
           XlsxCell.Currency(c.creditLimitPaise)
         )
       }
-      val sheet = XlsxSheet(
-        name = "All Customers",
-        titleBanner = "IceTrack - All Customer Accounts Summary",
-        subtitleBanner = "Period: $periodLabel | Active Shops: ${allCustomers.size}",
-        headers = listOf("Shop Name", "Owner Name", "Phone", "Opening Bal (INR)", "Current Due (INR)", "Credit Limit (INR)"),
-        rows = rows,
-        footerRows = listOf(
+      val footerRows = mutableListOf(
+        listOf(
+          XlsxCell.Text("TOTAL RECEIVABLES"),
+          XlsxCell.WholeNumber(allCustomers.size.toLong()),
+          XlsxCell.Text("Shops"),
+          XlsxCell.Text(""),
+          XlsxCell.Currency(totalDue),
+          XlsxCell.Text("")
+        )
+      )
+      if (totalAdvance > 0L) {
+        footerRows.add(
           listOf(
-            XlsxCell.Text("TOTAL RECEIVABLES"),
-            XlsxCell.WholeNumber(allCustomers.size.toLong()),
-            XlsxCell.Text("Shops"),
+            XlsxCell.Text("TOTAL CUSTOMER ADVANCES"),
             XlsxCell.Text(""),
-            XlsxCell.Currency(totalDue),
+            XlsxCell.Text(""),
+            XlsxCell.Text(""),
+            XlsxCell.Currency(totalAdvance),
             XlsxCell.Text("")
           )
         )
+      }
+      val sheet = XlsxSheet(
+        name = "All Customers",
+        titleBanner = "IceTrack - All Customer Accounts Summary",
+        subtitleBanner = "Period: $periodLabel | Shops: ${allCustomers.size}",
+        headers = listOf("Shop Name", "Owner Name", "Phone", "Opening Bal (INR)", "Current Due (INR)", "Credit Limit (INR)"),
+        rows = rows,
+        footerRows = footerRows
       )
       return writeXlsxFile(
         context = context,
@@ -914,13 +934,20 @@ object ExportDocumentService {
           SubledgerCalculationEngine.formatPaise(c.creditLimitPaise)
         )
       }
-      val totalDue = allCustomers.sumOf { c ->
-        SubledgerCalculationEngine.calculateCustomerBalance(entriesByCust[c.id] ?: emptyList(), endDate)
+      var totalDue = 0L
+      var totalAdvance = 0L
+      allCustomers.forEach { c ->
+        val bal = SubledgerCalculationEngine.calculateCustomerBalance(entriesByCust[c.id] ?: emptyList(), endDate)
+        totalDue += bal.coerceAtLeast(0L)
+        totalAdvance += (-bal).coerceAtLeast(0L)
       }
-      val cards = listOf(
-        "Total Receivables" to SubledgerCalculationEngine.formatPaise(totalDue),
-        "Active Shops" to "${allCustomers.size}"
-      )
+      val cards = buildList {
+        add("Total Receivables" to SubledgerCalculationEngine.formatPaise(totalDue))
+        if (totalAdvance > 0L) {
+          add("Total Advances" to SubledgerCalculationEngine.formatPaise(totalAdvance))
+        }
+        add("Shops Included" to "${allCustomers.size}")
+      }
 
       return renderPdfSafely(
         context = context,
@@ -967,15 +994,20 @@ object ExportDocumentService {
     sb.append("Supplier Name,Contact Person,Phone Number,Opening Balance (INR),Current Payable (INR),Credit Terms (Days)\n")
     val entriesBySup = entries.filter { !it.isReversed && it.partyType == PartyType.SUPPLIER }.groupBy { it.partyId }
     var totalPayable = 0L
+    var totalAdvance = 0L
     for (s in allSuppliers) {
       val supEntries = entriesBySup[s.id] ?: emptyList()
       val curBalance = SubledgerCalculationEngine.calculateSupplierBalance(supEntries, endDate)
-      totalPayable += curBalance
+      totalPayable += curBalance.coerceAtLeast(0L)
+      totalAdvance += (-curBalance).coerceAtLeast(0L)
       val op = SubledgerCalculationEngine.formatPaise(s.openingBalancePaise, false)
       val bal = SubledgerCalculationEngine.formatPaise(curBalance, false)
       sb.append("${csvCell(s.name)},${csvCell(s.contactPerson)},${csvCell(s.phoneNumber)},${csvCell(op)},${csvCell(bal)},${s.creditTermsDays}\n")
     }
     sb.append("\nTOTAL PAYABLES,,,,${csvCell(SubledgerCalculationEngine.formatPaise(totalPayable, false))},\n")
+    if (totalAdvance > 0L) {
+      sb.append("TOTAL ADVANCES PAID,,,,${csvCell(SubledgerCalculationEngine.formatPaise(totalAdvance, false))},\n")
+    }
     return sb.toString()
   }
 
@@ -1071,9 +1103,11 @@ object ExportDocumentService {
     } else {
       val entriesBySup = entries.filter { !it.isReversed && it.partyType == PartyType.SUPPLIER }.groupBy { it.partyId }
       var totalPayable = 0L
+      var totalAdvance = 0L
       val rows = allSuppliers.map { s ->
         val curBalance = SubledgerCalculationEngine.calculateSupplierBalance(entriesBySup[s.id] ?: emptyList(), endDate)
-        totalPayable += curBalance
+        totalPayable += curBalance.coerceAtLeast(0L)
+        totalAdvance += (-curBalance).coerceAtLeast(0L)
         listOf(
           XlsxCell.Text(s.name),
           XlsxCell.Text(s.contactPerson),
@@ -1083,22 +1117,35 @@ object ExportDocumentService {
           XlsxCell.WholeNumber(s.creditTermsDays.toLong())
         )
       }
-      val sheet = XlsxSheet(
-        name = "All Suppliers",
-        titleBanner = "IceTrack - All Supplier Accounts Summary",
-        subtitleBanner = "Period: $periodLabel | Active Suppliers: ${allSuppliers.size}",
-        headers = listOf("Supplier Name", "Contact", "Phone", "Opening Bal (INR)", "Current Payable (INR)", "Credit Terms (Days)"),
-        rows = rows,
-        footerRows = listOf(
+      val footerRows = mutableListOf(
+        listOf(
+          XlsxCell.Text("TOTAL PAYABLES"),
+          XlsxCell.WholeNumber(allSuppliers.size.toLong()),
+          XlsxCell.Text("Suppliers"),
+          XlsxCell.Text(""),
+          XlsxCell.Currency(totalPayable),
+          XlsxCell.Text("")
+        )
+      )
+      if (totalAdvance > 0L) {
+        footerRows.add(
           listOf(
-            XlsxCell.Text("TOTAL PAYABLES"),
-            XlsxCell.WholeNumber(allSuppliers.size.toLong()),
-            XlsxCell.Text("Suppliers"),
+            XlsxCell.Text("TOTAL ADVANCES PAID"),
             XlsxCell.Text(""),
-            XlsxCell.Currency(totalPayable),
+            XlsxCell.Text(""),
+            XlsxCell.Text(""),
+            XlsxCell.Currency(totalAdvance),
             XlsxCell.Text("")
           )
         )
+      }
+      val sheet = XlsxSheet(
+        name = "All Suppliers",
+        titleBanner = "IceTrack - All Supplier Accounts Summary",
+        subtitleBanner = "Period: $periodLabel | Suppliers: ${allSuppliers.size}",
+        headers = listOf("Supplier Name", "Contact", "Phone", "Opening Bal (INR)", "Current Payable (INR)", "Credit Terms (Days)"),
+        rows = rows,
+        footerRows = footerRows
       )
       return writeXlsxFile(
         context = context,
@@ -1196,13 +1243,20 @@ object ExportDocumentService {
           "${s.creditTermsDays} Days"
         )
       }
-      val totalPayable = allSuppliers.sumOf { s ->
-        SubledgerCalculationEngine.calculateSupplierBalance(entriesBySup[s.id] ?: emptyList(), endDate)
+      var totalPayable = 0L
+      var totalAdvance = 0L
+      allSuppliers.forEach { s ->
+        val bal = SubledgerCalculationEngine.calculateSupplierBalance(entriesBySup[s.id] ?: emptyList(), endDate)
+        totalPayable += bal.coerceAtLeast(0L)
+        totalAdvance += (-bal).coerceAtLeast(0L)
       }
-      val cards = listOf(
-        "Total Payables" to SubledgerCalculationEngine.formatPaise(totalPayable),
-        "Active Suppliers" to "${allSuppliers.size}"
-      )
+      val cards = buildList {
+        add("Total Payables" to SubledgerCalculationEngine.formatPaise(totalPayable))
+        if (totalAdvance > 0L) {
+          add("Advances Paid" to SubledgerCalculationEngine.formatPaise(totalAdvance))
+        }
+        add("Suppliers Included" to "${allSuppliers.size}")
+      }
 
       return renderPdfSafely(
         context = context,

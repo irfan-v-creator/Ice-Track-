@@ -46,6 +46,14 @@ data class CustomerFormState(
   val isSaving: Boolean = false
 )
 
+data class CustomerListSummary(
+  val totalActiveReceivablesPaise: Long = 0L,
+  val totalArchivedReceivablesPaise: Long = 0L,
+  val totalAllReceivablesPaise: Long = 0L,
+  val totalAllAdvancesPaise: Long = 0L,
+  val archivedCount: Int = 0
+)
+
 class CustomerViewModel(
   private val customerRepository: CustomerRepository,
   private val productRepository: ProductRepository,
@@ -53,16 +61,18 @@ class CustomerViewModel(
 ) : ViewModel() {
 
   val searchQuery = MutableStateFlow("")
+  val includeArchived = MutableStateFlow(false)
 
   val allProducts: StateFlow<List<Product>> = productRepository.allActiveProducts
     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-  @OptIn(ExperimentalCoroutinesApi::class)
   val customersWithBalance: StateFlow<List<CustomerWithBalance>> = combine(
-    searchQuery.flatMapLatest { query -> customerRepository.searchCustomers(query) },
+    customerRepository.allCustomersIncludingArchived,
+    searchQuery,
+    includeArchived,
     subledgerRepository.allEntries,
     subledgerRepository.getAllActiveAllocationsByPartyType(PartyType.CUSTOMER)
-  ) { customers, entries, allocations ->
+  ) { allCustomers, query, showArchived, entries, allocations ->
     val activeEntries = entries.filter { !it.isReversed && it.partyType == PartyType.CUSTOMER }
     val entriesByCustomer = activeEntries.groupBy { it.partyId }
     val advancesByCustomer = allocations
@@ -70,19 +80,65 @@ class CustomerViewModel(
       .groupBy { it.partyId }
       .mapValues { (_, list) -> list.sumOf { it.allocatedAmountPaise } }
 
-    customers.map { customer ->
-      val partyEntries = entriesByCustomer[customer.id] ?: emptyList()
-      val receivable = SubledgerCalculationEngine.calculateCustomerBalance(partyEntries)
-      val advance = advancesByCustomer[customer.id] ?: 0L
-      CustomerWithBalance(customer, receivable, advance)
-    }
+    val q = query.trim().lowercase()
+    allCustomers
+      .filter { cust ->
+        (showArchived || cust.isActive) &&
+          (q.isEmpty() ||
+            cust.shopName.lowercase().contains(q) ||
+            cust.ownerName.lowercase().contains(q) ||
+            cust.phoneNumber.lowercase().contains(q))
+      }
+      .map { customer ->
+        val partyEntries = entriesByCustomer[customer.id] ?: emptyList()
+        val receivable = SubledgerCalculationEngine.calculateCustomerBalance(partyEntries)
+        val advance = advancesByCustomer[customer.id] ?: 0L
+        CustomerWithBalance(customer, receivable, advance)
+      }
   }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+  val listSummary: StateFlow<CustomerListSummary> = combine(
+    customerRepository.allCustomersIncludingArchived,
+    subledgerRepository.allEntries,
+    subledgerRepository.getAllActiveAllocationsByPartyType(PartyType.CUSTOMER)
+  ) { allCustomers, entries, allocations ->
+    val activeCustomerIds = allCustomers.filter { it.isActive }.map { it.id }.toSet()
+    val entriesByCustomer = entries
+      .filter { !it.isReversed && it.partyType == PartyType.CUSTOMER }
+      .groupBy { it.partyId }
+
+    var activeRec = 0L
+    var archivedRec = 0L
+    entriesByCustomer.forEach { (custId, partyEntries) ->
+      val due = SubledgerCalculationEngine.calculateCustomerBalance(partyEntries).coerceAtLeast(0L)
+      if (custId in activeCustomerIds) {
+        activeRec += due
+      } else {
+        archivedRec += due
+      }
+    }
+    val totalAdvances = allocations
+      .filter { !it.isReversed && it.allocationType == PaymentAllocationType.ADVANCE }
+      .sumOf { it.allocatedAmountPaise }
+
+    CustomerListSummary(
+      totalActiveReceivablesPaise = activeRec,
+      totalArchivedReceivablesPaise = archivedRec,
+      totalAllReceivablesPaise = activeRec + archivedRec,
+      totalAllAdvancesPaise = totalAdvances,
+      archivedCount = allCustomers.count { !it.isActive }
+    )
+  }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), CustomerListSummary())
 
   private val _formState = MutableStateFlow(CustomerFormState())
   val formState: StateFlow<CustomerFormState> = _formState.asStateFlow()
 
   fun onSearchQueryChanged(query: String) {
     searchQuery.value = query
+  }
+
+  fun toggleIncludeArchived() {
+    includeArchived.value = !includeArchived.value
   }
 
   fun openAddDialog() {

@@ -41,19 +41,29 @@ data class SupplierFormState(
   val isSaving: Boolean = false
 )
 
+data class SupplierListSummary(
+  val totalActivePayablesPaise: Long = 0L,
+  val totalArchivedPayablesPaise: Long = 0L,
+  val totalAllPayablesPaise: Long = 0L,
+  val totalAllAdvancesPaise: Long = 0L,
+  val archivedCount: Int = 0
+)
+
 class SupplierViewModel(
   private val supplierRepository: SupplierRepository,
   private val subledgerRepository: SubledgerRepository
 ) : ViewModel() {
 
   val searchQuery = MutableStateFlow("")
+  val includeArchived = MutableStateFlow(false)
 
-  @OptIn(ExperimentalCoroutinesApi::class)
   val suppliersWithBalance: StateFlow<List<SupplierWithBalance>> = combine(
-    searchQuery.flatMapLatest { query -> supplierRepository.searchSuppliers(query) },
+    supplierRepository.allSuppliersIncludingArchived,
+    searchQuery,
+    includeArchived,
     subledgerRepository.allEntries,
     subledgerRepository.getAllActiveAllocationsByPartyType(PartyType.SUPPLIER)
-  ) { suppliers, entries, allocations ->
+  ) { allSuppliers, query, showArchived, entries, allocations ->
     val activeEntries = entries.filter { !it.isReversed && it.partyType == PartyType.SUPPLIER }
     val entriesBySupplier = activeEntries.groupBy { it.partyId }
     val advancesBySupplier = allocations
@@ -61,19 +71,65 @@ class SupplierViewModel(
       .groupBy { it.partyId }
       .mapValues { (_, list) -> list.sumOf { it.allocatedAmountPaise } }
 
-    suppliers.map { supplier ->
-      val partyEntries = entriesBySupplier[supplier.id] ?: emptyList()
-      val payable = SubledgerCalculationEngine.calculateSupplierBalance(partyEntries)
-      val advance = advancesBySupplier[supplier.id] ?: 0L
-      SupplierWithBalance(supplier, payable, advance)
-    }
+    val q = query.trim().lowercase()
+    allSuppliers
+      .filter { sup ->
+        (showArchived || sup.isActive) &&
+          (q.isEmpty() ||
+            sup.name.lowercase().contains(q) ||
+            sup.contactPerson.lowercase().contains(q) ||
+            sup.phoneNumber.lowercase().contains(q))
+      }
+      .map { supplier ->
+        val partyEntries = entriesBySupplier[supplier.id] ?: emptyList()
+        val payable = SubledgerCalculationEngine.calculateSupplierBalance(partyEntries)
+        val advance = advancesBySupplier[supplier.id] ?: 0L
+        SupplierWithBalance(supplier, payable, advance)
+      }
   }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+  val listSummary: StateFlow<SupplierListSummary> = combine(
+    supplierRepository.allSuppliersIncludingArchived,
+    subledgerRepository.allEntries,
+    subledgerRepository.getAllActiveAllocationsByPartyType(PartyType.SUPPLIER)
+  ) { allSuppliers, entries, allocations ->
+    val activeSupplierIds = allSuppliers.filter { it.isActive }.map { it.id }.toSet()
+    val entriesBySupplier = entries
+      .filter { !it.isReversed && it.partyType == PartyType.SUPPLIER }
+      .groupBy { it.partyId }
+
+    var activePay = 0L
+    var archivedPay = 0L
+    entriesBySupplier.forEach { (supId, partyEntries) ->
+      val due = SubledgerCalculationEngine.calculateSupplierBalance(partyEntries).coerceAtLeast(0L)
+      if (supId in activeSupplierIds) {
+        activePay += due
+      } else {
+        archivedPay += due
+      }
+    }
+    val totalAdvances = allocations
+      .filter { !it.isReversed && it.allocationType == PaymentAllocationType.ADVANCE }
+      .sumOf { it.allocatedAmountPaise }
+
+    SupplierListSummary(
+      totalActivePayablesPaise = activePay,
+      totalArchivedPayablesPaise = archivedPay,
+      totalAllPayablesPaise = activePay + archivedPay,
+      totalAllAdvancesPaise = totalAdvances,
+      archivedCount = allSuppliers.count { !it.isActive }
+    )
+  }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SupplierListSummary())
 
   private val _formState = MutableStateFlow(SupplierFormState())
   val formState: StateFlow<SupplierFormState> = _formState.asStateFlow()
 
   fun onSearchQueryChanged(query: String) {
     searchQuery.value = query
+  }
+
+  fun toggleIncludeArchived() {
+    includeArchived.value = !includeArchived.value
   }
 
   fun openAddDialog() {

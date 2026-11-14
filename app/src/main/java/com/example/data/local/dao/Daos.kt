@@ -201,6 +201,9 @@ interface PaymentAllocationDao {
   @Query("SELECT * FROM payment_allocations WHERE paymentId = :paymentId AND isReversed = 0")
   fun getForPayment(paymentId: Long): Flow<List<PaymentAllocationEntity>>
 
+  @Query("SELECT * FROM payment_allocations WHERE paymentId = :paymentId AND isReversed = 0 ORDER BY allocatedAt ASC, id ASC")
+  suspend fun getActiveForPaymentSync(paymentId: Long): List<PaymentAllocationEntity>
+
   @Query("SELECT * FROM payment_allocations WHERE partyType = :partyType AND invoiceId = :invoiceId AND allocationType = 'INVOICE' AND isReversed = 0")
   fun getForInvoice(partyType: PartyType, invoiceId: Long): Flow<List<PaymentAllocationEntity>>
 
@@ -314,7 +317,7 @@ interface PurchaseInvoiceDao {
   @Query("SELECT * FROM purchase_invoices WHERE id = :id")
   suspend fun getById(id: Long): PurchaseInvoiceEntity?
 
-  @Query("SELECT * FROM purchase_invoices WHERE supplierId = :supplierId AND paymentStatus != 'PAID' ORDER BY invoiceDate ASC")
+  @Query("SELECT * FROM purchase_invoices WHERE supplierId = :supplierId AND paymentStatus != 'PAID' ORDER BY invoiceDate ASC, id ASC")
   suspend fun getUnpaidForSupplier(supplierId: Long): List<PurchaseInvoiceEntity>
 
   @Query("SELECT COUNT(*) FROM purchase_invoices")
@@ -353,7 +356,7 @@ interface SalesInvoiceDao {
   @Query("SELECT * FROM sales_invoices WHERE id = :id")
   suspend fun getById(id: Long): SalesInvoiceEntity?
 
-  @Query("SELECT * FROM sales_invoices WHERE customerId = :customerId AND paymentStatus != 'PAID' ORDER BY invoiceDate ASC")
+  @Query("SELECT * FROM sales_invoices WHERE customerId = :customerId AND paymentStatus != 'PAID' ORDER BY invoiceDate ASC, id ASC")
   suspend fun getUnpaidForCustomer(customerId: Long): List<SalesInvoiceEntity>
 
   @Query("SELECT COUNT(*) FROM sales_invoices")

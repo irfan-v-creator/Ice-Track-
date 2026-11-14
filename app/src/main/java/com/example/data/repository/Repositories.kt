@@ -158,6 +158,8 @@ class ProductRepository(private val db: IceTrackDatabase) {
 class SupplierRepository(private val db: IceTrackDatabase) {
   private val supplierDao = db.supplierDao()
   private val subledgerDao = db.subledgerDao()
+  private val allocationDao = db.paymentAllocationDao()
+  private val purchaseDao = db.purchaseInvoiceDao()
 
   val allActiveSuppliers: Flow<List<Supplier>> = supplierDao.getAllActive().map { list ->
     list.map { it.toDomain() }
@@ -184,6 +186,25 @@ class SupplierRepository(private val db: IceTrackDatabase) {
     return combine(supplierFlow, entriesFlow) { supplier, entries ->
       val balance = SubledgerCalculationEngine.calculateSupplierBalance(entries)
       supplier to balance
+    }
+  }
+
+  private suspend fun buildSupplierOpeningTargets(supplierId: Long): List<OpeningBalanceAllocationTarget> {
+    val openingEntries = subledgerDao.getActiveEntriesByTypeForPartySync(
+      partyType = PartyType.SUPPLIER,
+      partyId = supplierId,
+      entryType = SubledgerEntryType.OPENING_BALANCE
+    ).filter { it.creditPaise > 0L }
+    var alreadyAllocated = allocationDao.getTotalAllocatedOpeningBalancePaiseSync(PartyType.SUPPLIER, supplierId)
+    return openingEntries.map { entry ->
+      val consumedForEntry = kotlin.math.min(alreadyAllocated, entry.creditPaise)
+      alreadyAllocated -= consumedForEntry
+      OpeningBalanceAllocationTarget(
+        subledgerEntryId = entry.id,
+        originalAmountPaise = entry.creditPaise,
+        alreadyAllocatedPaise = consumedForEntry,
+        entryDate = entry.entryDate
+      )
     }
   }
 
@@ -216,17 +237,62 @@ class SupplierRepository(private val db: IceTrackDatabase) {
       existing.openingBalanceDate != supplier.openingBalanceDate
 
     if (openingChanged) {
+      val freedOpeningPaymentAllocations = mutableListOf<PaymentAllocationEntity>()
+      var hadOldOpeningAdvanceSettledInvoices = false
+
       if (existing != null) {
         val activeOpeningEntries = subledgerDao.getActiveEntriesByTypeForPartySync(
           partyType = PartyType.SUPPLIER,
           partyId = supplierId,
           entryType = SubledgerEntryType.OPENING_BALANCE
         )
+        val oldOpeningEntryIds = activeOpeningEntries.map { it.id }.toSet()
+
+        // 1. Reverse allocations sourced from old negative opening balance advance entries
+        val invoiceReversalTotals = mutableMapOf<Long, Long>()
+        for (oldEntryId in oldOpeningEntryIds) {
+          val oldOpeningAllocs = allocationDao.getActiveForPaymentSync(oldEntryId)
+          for (alloc in oldOpeningAllocs) {
+            allocationDao.markReversed(alloc.id)
+            if (alloc.allocationType == PaymentAllocationType.INVOICE && alloc.invoiceId != null) {
+              hadOldOpeningAdvanceSettledInvoices = true
+              invoiceReversalTotals[alloc.invoiceId] =
+                (invoiceReversalTotals[alloc.invoiceId] ?: 0L) + alloc.allocatedAmountPaise
+            }
+          }
+        }
+        for ((invId, reversedAmt) in invoiceReversalTotals) {
+          val inv = purchaseDao.getById(invId) ?: continue
+          val newPaid = (inv.paidAmountPaise - reversedAmt).coerceIn(0L, inv.totalAmountPaise)
+          val newStatus = when {
+            newPaid >= inv.totalAmountPaise -> PaymentStatus.PAID
+            newPaid > 0L -> PaymentStatus.PARTIALLY_PAID
+            else -> PaymentStatus.UNPAID
+          }
+          purchaseDao.update(inv.copy(paidAmountPaise = newPaid, paymentStatus = newStatus))
+        }
+
+        // 2. Collect & reverse active OPENING_BALANCE settlement allocations tied to old opening entries
+        val activeObAllocations = allocationDao.getActiveAllocationsByTypeForPartySync(
+          partyType = PartyType.SUPPLIER,
+          partyId = supplierId,
+          allocationType = PaymentAllocationType.OPENING_BALANCE
+        )
+        for (alloc in activeObAllocations) {
+          allocationDao.markReversed(alloc.id)
+          if (alloc.paymentId !in oldOpeningEntryIds) {
+            freedOpeningPaymentAllocations.add(alloc)
+          }
+        }
+
+        // 3. Reverse old opening subledger entries (immutable audit trail preserved)
         for (oldEntry in activeOpeningEntries) {
           subledgerDao.markReversed(oldEntry.id)
         }
       }
 
+      // 4. Insert new opening subledger entry and negative-balance ADVANCE allocation if applicable
+      var newNegativeOpeningAdvId: Long? = null
       if (supplier.openingBalancePaise != 0L) {
         val credit = if (supplier.openingBalancePaise > 0L) supplier.openingBalancePaise else 0L
         val debit = if (supplier.openingBalancePaise < 0L) kotlin.math.abs(supplier.openingBalancePaise) else 0L
@@ -235,7 +301,7 @@ class SupplierRepository(private val db: IceTrackDatabase) {
         } else {
           "Updated opening balance payable (previous: ${SubledgerCalculationEngine.formatPaise(existing.openingBalancePaise)})"
         }
-        subledgerDao.insert(
+        val newOpeningId = subledgerDao.insert(
           SubledgerEntryEntity(
             partyType = PartyType.SUPPLIER,
             partyId = supplierId,
@@ -248,6 +314,135 @@ class SupplierRepository(private val db: IceTrackDatabase) {
             notes = noteText
           )
         )
+        if (supplier.openingBalancePaise < 0L) {
+          newNegativeOpeningAdvId = allocationDao.insert(
+            PaymentAllocationEntity(
+              paymentId = newOpeningId,
+              partyType = PartyType.SUPPLIER,
+              partyId = supplierId,
+              allocationType = PaymentAllocationType.ADVANCE,
+              invoiceId = null,
+              allocatedAmountPaise = kotlin.math.abs(supplier.openingBalancePaise),
+              allocatedAt = supplier.openingBalanceDate,
+              notes = "Opening balance advance credit"
+            )
+          )
+        }
+      }
+
+      // 5. Reconcile freed OPENING_BALANCE payment allocations FIFO across new OB, unpaid bills, or ADVANCE
+      for (freedAlloc in freedOpeningPaymentAllocations.sortedWith(compareBy<PaymentAllocationEntity> { it.allocatedAt }.thenBy { it.id })) {
+        val openingTargets = buildSupplierOpeningTargets(supplierId)
+        val unpaidInvoices = purchaseDao.getUnpaidForSupplier(supplierId)
+        val invoiceTargets = unpaidInvoices.map { inv ->
+          InvoiceAllocationTarget(
+            invoiceId = inv.id,
+            totalAmountPaise = inv.totalAmountPaise,
+            alreadyPaidPaise = inv.paidAmountPaise,
+            invoiceDate = inv.invoiceDate
+          )
+        }
+        val reconciled = PaymentAllocationEngine.allocateFifoAcrossDuesAndAdvance(
+          paymentId = freedAlloc.paymentId,
+          partyType = PartyType.SUPPLIER,
+          partyId = supplierId,
+          totalPaymentPaise = freedAlloc.allocatedAmountPaise,
+          openingBalances = openingTargets,
+          invoices = invoiceTargets,
+          allocatedAt = freedAlloc.allocatedAt,
+          advanceNote = "Reconciled supplier advance after opening balance edit"
+        )
+        for (alloc in reconciled.allocations) {
+          val note = when (alloc.allocationType) {
+            PaymentAllocationType.OPENING_BALANCE -> "Reconciled opening balance settlement"
+            PaymentAllocationType.INVOICE -> "Reconciled invoice allocation after opening balance edit"
+            PaymentAllocationType.ADVANCE -> alloc.notes
+          }
+          allocationDao.insert(alloc.copy(notes = note).toEntity())
+        }
+        for ((invId, addedPaid) in reconciled.invoiceAdditionalPaidPaise) {
+          if (addedPaid <= 0L) continue
+          val inv = unpaidInvoices.first { it.id == invId }
+          val newPaid = (inv.paidAmountPaise + addedPaid).coerceAtMost(inv.totalAmountPaise)
+          val status = reconciled.invoiceStatuses[invId] ?: PaymentStatus.PARTIALLY_PAID
+          purchaseDao.update(inv.copy(paidAmountPaise = newPaid, paymentStatus = status))
+        }
+      }
+
+      // 6. If positive opening balance increased/created and active advances exist, apply advances to remaining OB only
+      if (supplier.openingBalancePaise > 0L) {
+        val activeAdvances = allocationDao.getActiveAllocationsByTypeForPartySync(
+          partyType = PartyType.SUPPLIER,
+          partyId = supplierId,
+          allocationType = PaymentAllocationType.ADVANCE
+        )
+        for (adv in activeAdvances) {
+          val openingTargets = buildSupplierOpeningTargets(supplierId)
+          if (openingTargets.none { it.remainingUnpaidPaise > 0L }) break
+          val result = PaymentAllocationEngine.allocateFifoAcrossDuesAndAdvance(
+            paymentId = adv.paymentId,
+            partyType = PartyType.SUPPLIER,
+            partyId = supplierId,
+            totalPaymentPaise = adv.allocatedAmountPaise,
+            openingBalances = openingTargets,
+            invoices = emptyList(),
+            allocatedAt = adv.allocatedAt,
+            advanceNote = adv.notes
+          )
+          if (result.openingBalanceAllocatedPaise <= 0L) break
+          allocationDao.markReversed(adv.id)
+          for (alloc in result.allocations) {
+            val updatedNote = if (alloc.allocationType == PaymentAllocationType.OPENING_BALANCE) {
+              "Reconciled advance to updated opening balance"
+            } else alloc.notes
+            allocationDao.insert(alloc.copy(notes = updatedNote).toEntity())
+          }
+        }
+      }
+
+      // 7. If an edited negative opening balance previously had advance applied to invoices, re-apply up to new advance
+      if (newNegativeOpeningAdvId != null && hadOldOpeningAdvanceSettledInvoices) {
+        val advEntity = allocationDao.getActiveAllocationsByTypeForPartySync(
+          partyType = PartyType.SUPPLIER,
+          partyId = supplierId,
+          allocationType = PaymentAllocationType.ADVANCE
+        ).firstOrNull { it.id == newNegativeOpeningAdvId }
+        if (advEntity != null) {
+          val unpaidInvoices = purchaseDao.getUnpaidForSupplier(supplierId)
+          if (unpaidInvoices.isNotEmpty()) {
+            val invoiceTargets = unpaidInvoices.map { inv ->
+              InvoiceAllocationTarget(
+                invoiceId = inv.id,
+                totalAmountPaise = inv.totalAmountPaise,
+                alreadyPaidPaise = inv.paidAmountPaise,
+                invoiceDate = inv.invoiceDate
+              )
+            }
+            val result = PaymentAllocationEngine.allocateFifoAcrossDuesAndAdvance(
+              paymentId = advEntity.paymentId,
+              partyType = PartyType.SUPPLIER,
+              partyId = supplierId,
+              totalPaymentPaise = advEntity.allocatedAmountPaise,
+              openingBalances = emptyList(),
+              invoices = invoiceTargets,
+              allocatedAt = supplier.openingBalanceDate,
+              advanceNote = "Remaining opening balance advance credit"
+            )
+            if (result.invoiceAdditionalPaidPaise.values.sum() > 0L) {
+              allocationDao.markReversed(advEntity.id)
+              for (alloc in result.allocations) {
+                allocationDao.insert(alloc.toEntity())
+              }
+              for ((invId, addedPaid) in result.invoiceAdditionalPaidPaise) {
+                if (addedPaid <= 0L) continue
+                val inv = unpaidInvoices.first { it.id == invId }
+                val newPaid = (inv.paidAmountPaise + addedPaid).coerceAtMost(inv.totalAmountPaise)
+                val status = result.invoiceStatuses[invId] ?: PaymentStatus.PARTIALLY_PAID
+                purchaseDao.update(inv.copy(paidAmountPaise = newPaid, paymentStatus = status))
+              }
+            }
+          }
+        }
       }
     }
 
@@ -263,6 +458,8 @@ class CustomerRepository(private val db: IceTrackDatabase) {
   private val customerDao = db.customerDao()
   private val subledgerDao = db.subledgerDao()
   private val priceDao = db.customerProductPriceDao()
+  private val allocationDao = db.paymentAllocationDao()
+  private val salesDao = db.salesInvoiceDao()
 
   val allActiveCustomers: Flow<List<Customer>> = customerDao.getAllActive().map { list ->
     list.map { it.toDomain() }
@@ -292,6 +489,25 @@ class CustomerRepository(private val db: IceTrackDatabase) {
 
   suspend fun getPriceForCustomerProduct(customerId: Long, productId: Long): Long? {
     return priceDao.getPrice(customerId, productId)?.customSellingPricePaise
+  }
+
+  private suspend fun buildCustomerOpeningTargets(customerId: Long): List<OpeningBalanceAllocationTarget> {
+    val openingEntries = subledgerDao.getActiveEntriesByTypeForPartySync(
+      partyType = PartyType.CUSTOMER,
+      partyId = customerId,
+      entryType = SubledgerEntryType.OPENING_BALANCE
+    ).filter { it.debitPaise > 0L }
+    var alreadyAllocated = allocationDao.getTotalAllocatedOpeningBalancePaiseSync(PartyType.CUSTOMER, customerId)
+    return openingEntries.map { entry ->
+      val consumedForEntry = kotlin.math.min(alreadyAllocated, entry.debitPaise)
+      alreadyAllocated -= consumedForEntry
+      OpeningBalanceAllocationTarget(
+        subledgerEntryId = entry.id,
+        originalAmountPaise = entry.debitPaise,
+        alreadyAllocatedPaise = consumedForEntry,
+        entryDate = entry.entryDate
+      )
+    }
   }
 
   suspend fun saveCustomer(
@@ -327,17 +543,62 @@ class CustomerRepository(private val db: IceTrackDatabase) {
       existing.openingBalanceDate != customer.openingBalanceDate
 
     if (openingChanged) {
+      val freedOpeningPaymentAllocations = mutableListOf<PaymentAllocationEntity>()
+      var hadOldOpeningAdvanceSettledInvoices = false
+
       if (existing != null) {
         val activeOpeningEntries = subledgerDao.getActiveEntriesByTypeForPartySync(
           partyType = PartyType.CUSTOMER,
           partyId = customerId,
           entryType = SubledgerEntryType.OPENING_BALANCE
         )
+        val oldOpeningEntryIds = activeOpeningEntries.map { it.id }.toSet()
+
+        // 1. Reverse allocations sourced from old negative opening balance advance entries
+        val invoiceReversalTotals = mutableMapOf<Long, Long>()
+        for (oldEntryId in oldOpeningEntryIds) {
+          val oldOpeningAllocs = allocationDao.getActiveForPaymentSync(oldEntryId)
+          for (alloc in oldOpeningAllocs) {
+            allocationDao.markReversed(alloc.id)
+            if (alloc.allocationType == PaymentAllocationType.INVOICE && alloc.invoiceId != null) {
+              hadOldOpeningAdvanceSettledInvoices = true
+              invoiceReversalTotals[alloc.invoiceId] =
+                (invoiceReversalTotals[alloc.invoiceId] ?: 0L) + alloc.allocatedAmountPaise
+            }
+          }
+        }
+        for ((invId, reversedAmt) in invoiceReversalTotals) {
+          val inv = salesDao.getById(invId) ?: continue
+          val newPaid = (inv.paidAmountPaise - reversedAmt).coerceIn(0L, inv.totalAmountPaise)
+          val newStatus = when {
+            newPaid >= inv.totalAmountPaise -> PaymentStatus.PAID
+            newPaid > 0L -> PaymentStatus.PARTIALLY_PAID
+            else -> PaymentStatus.UNPAID
+          }
+          salesDao.update(inv.copy(paidAmountPaise = newPaid, paymentStatus = newStatus))
+        }
+
+        // 2. Collect & reverse active OPENING_BALANCE settlement allocations tied to old opening entries
+        val activeObAllocations = allocationDao.getActiveAllocationsByTypeForPartySync(
+          partyType = PartyType.CUSTOMER,
+          partyId = customerId,
+          allocationType = PaymentAllocationType.OPENING_BALANCE
+        )
+        for (alloc in activeObAllocations) {
+          allocationDao.markReversed(alloc.id)
+          if (alloc.paymentId !in oldOpeningEntryIds) {
+            freedOpeningPaymentAllocations.add(alloc)
+          }
+        }
+
+        // 3. Reverse old opening subledger entries (immutable audit trail preserved)
         for (oldEntry in activeOpeningEntries) {
           subledgerDao.markReversed(oldEntry.id)
         }
       }
 
+      // 4. Insert new opening subledger entry and negative-balance ADVANCE allocation if applicable
+      var newNegativeOpeningAdvId: Long? = null
       if (customer.openingBalancePaise != 0L) {
         val debit = if (customer.openingBalancePaise > 0L) customer.openingBalancePaise else 0L
         val credit = if (customer.openingBalancePaise < 0L) kotlin.math.abs(customer.openingBalancePaise) else 0L
@@ -346,7 +607,7 @@ class CustomerRepository(private val db: IceTrackDatabase) {
         } else {
           "Updated opening balance receivable (previous: ${SubledgerCalculationEngine.formatPaise(existing.openingBalancePaise)})"
         }
-        subledgerDao.insert(
+        val newOpeningId = subledgerDao.insert(
           SubledgerEntryEntity(
             partyType = PartyType.CUSTOMER,
             partyId = customerId,
@@ -359,6 +620,135 @@ class CustomerRepository(private val db: IceTrackDatabase) {
             notes = noteText
           )
         )
+        if (customer.openingBalancePaise < 0L) {
+          newNegativeOpeningAdvId = allocationDao.insert(
+            PaymentAllocationEntity(
+              paymentId = newOpeningId,
+              partyType = PartyType.CUSTOMER,
+              partyId = customerId,
+              allocationType = PaymentAllocationType.ADVANCE,
+              invoiceId = null,
+              allocatedAmountPaise = kotlin.math.abs(customer.openingBalancePaise),
+              allocatedAt = customer.openingBalanceDate,
+              notes = "Opening balance advance credit"
+            )
+          )
+        }
+      }
+
+      // 5. Reconcile freed OPENING_BALANCE payment allocations FIFO across new OB, unpaid invoices, or ADVANCE
+      for (freedAlloc in freedOpeningPaymentAllocations.sortedWith(compareBy<PaymentAllocationEntity> { it.allocatedAt }.thenBy { it.id })) {
+        val openingTargets = buildCustomerOpeningTargets(customerId)
+        val unpaidInvoices = salesDao.getUnpaidForCustomer(customerId)
+        val invoiceTargets = unpaidInvoices.map { inv ->
+          InvoiceAllocationTarget(
+            invoiceId = inv.id,
+            totalAmountPaise = inv.totalAmountPaise,
+            alreadyPaidPaise = inv.paidAmountPaise,
+            invoiceDate = inv.invoiceDate
+          )
+        }
+        val reconciled = PaymentAllocationEngine.allocateFifoAcrossDuesAndAdvance(
+          paymentId = freedAlloc.paymentId,
+          partyType = PartyType.CUSTOMER,
+          partyId = customerId,
+          totalPaymentPaise = freedAlloc.allocatedAmountPaise,
+          openingBalances = openingTargets,
+          invoices = invoiceTargets,
+          allocatedAt = freedAlloc.allocatedAt,
+          advanceNote = "Reconciled customer advance after opening balance edit"
+        )
+        for (alloc in reconciled.allocations) {
+          val note = when (alloc.allocationType) {
+            PaymentAllocationType.OPENING_BALANCE -> "Reconciled opening balance settlement"
+            PaymentAllocationType.INVOICE -> "Reconciled invoice allocation after opening balance edit"
+            PaymentAllocationType.ADVANCE -> alloc.notes
+          }
+          allocationDao.insert(alloc.copy(notes = note).toEntity())
+        }
+        for ((invId, addedPaid) in reconciled.invoiceAdditionalPaidPaise) {
+          if (addedPaid <= 0L) continue
+          val inv = unpaidInvoices.first { it.id == invId }
+          val newPaid = (inv.paidAmountPaise + addedPaid).coerceAtMost(inv.totalAmountPaise)
+          val status = reconciled.invoiceStatuses[invId] ?: PaymentStatus.PARTIALLY_PAID
+          salesDao.update(inv.copy(paidAmountPaise = newPaid, paymentStatus = status))
+        }
+      }
+
+      // 6. If positive opening balance increased/created and active advances exist, apply advances to remaining OB only
+      if (customer.openingBalancePaise > 0L) {
+        val activeAdvances = allocationDao.getActiveAllocationsByTypeForPartySync(
+          partyType = PartyType.CUSTOMER,
+          partyId = customerId,
+          allocationType = PaymentAllocationType.ADVANCE
+        )
+        for (adv in activeAdvances) {
+          val openingTargets = buildCustomerOpeningTargets(customerId)
+          if (openingTargets.none { it.remainingUnpaidPaise > 0L }) break
+          val result = PaymentAllocationEngine.allocateFifoAcrossDuesAndAdvance(
+            paymentId = adv.paymentId,
+            partyType = PartyType.CUSTOMER,
+            partyId = customerId,
+            totalPaymentPaise = adv.allocatedAmountPaise,
+            openingBalances = openingTargets,
+            invoices = emptyList(),
+            allocatedAt = adv.allocatedAt,
+            advanceNote = adv.notes
+          )
+          if (result.openingBalanceAllocatedPaise <= 0L) break
+          allocationDao.markReversed(adv.id)
+          for (alloc in result.allocations) {
+            val updatedNote = if (alloc.allocationType == PaymentAllocationType.OPENING_BALANCE) {
+              "Reconciled advance to updated opening balance"
+            } else alloc.notes
+            allocationDao.insert(alloc.copy(notes = updatedNote).toEntity())
+          }
+        }
+      }
+
+      // 7. If an edited negative opening balance previously had advance applied to invoices, re-apply up to new advance
+      if (newNegativeOpeningAdvId != null && hadOldOpeningAdvanceSettledInvoices) {
+        val advEntity = allocationDao.getActiveAllocationsByTypeForPartySync(
+          partyType = PartyType.CUSTOMER,
+          partyId = customerId,
+          allocationType = PaymentAllocationType.ADVANCE
+        ).firstOrNull { it.id == newNegativeOpeningAdvId }
+        if (advEntity != null) {
+          val unpaidInvoices = salesDao.getUnpaidForCustomer(customerId)
+          if (unpaidInvoices.isNotEmpty()) {
+            val invoiceTargets = unpaidInvoices.map { inv ->
+              InvoiceAllocationTarget(
+                invoiceId = inv.id,
+                totalAmountPaise = inv.totalAmountPaise,
+                alreadyPaidPaise = inv.paidAmountPaise,
+                invoiceDate = inv.invoiceDate
+              )
+            }
+            val result = PaymentAllocationEngine.allocateFifoAcrossDuesAndAdvance(
+              paymentId = advEntity.paymentId,
+              partyType = PartyType.CUSTOMER,
+              partyId = customerId,
+              totalPaymentPaise = advEntity.allocatedAmountPaise,
+              openingBalances = emptyList(),
+              invoices = invoiceTargets,
+              allocatedAt = customer.openingBalanceDate,
+              advanceNote = "Remaining opening balance advance credit"
+            )
+            if (result.invoiceAdditionalPaidPaise.values.sum() > 0L) {
+              allocationDao.markReversed(advEntity.id)
+              for (alloc in result.allocations) {
+                allocationDao.insert(alloc.toEntity())
+              }
+              for ((invId, addedPaid) in result.invoiceAdditionalPaidPaise) {
+                if (addedPaid <= 0L) continue
+                val inv = unpaidInvoices.first { it.id == invId }
+                val newPaid = (inv.paidAmountPaise + addedPaid).coerceAtMost(inv.totalAmountPaise)
+                val status = result.invoiceStatuses[invId] ?: PaymentStatus.PARTIALLY_PAID
+                salesDao.update(inv.copy(paidAmountPaise = newPaid, paymentStatus = status))
+              }
+            }
+          }
+        }
       }
     }
 

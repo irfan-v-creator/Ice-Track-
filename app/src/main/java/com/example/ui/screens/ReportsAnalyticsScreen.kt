@@ -668,7 +668,17 @@ fun ShopPerformanceTab(shops: List<ShopSalesPerformance>) {
             Spacer(modifier = Modifier.height(4.dp))
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
               Text(text = "Sales: ${SubledgerCalculationEngine.formatPaise(s.totalSalesPaise)}", fontSize = 11.sp, color = FigmaMuted)
-              Text(text = "Due: ${SubledgerCalculationEngine.formatPaise(s.outstandingDuesPaise)}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (s.outstandingDuesPaise > 0) FigmaRed else FigmaTeal)
+              val balLabel = if (s.advanceCreditPaise > 0L) {
+                "Adv: ${SubledgerCalculationEngine.formatPaise(s.advanceCreditPaise)}"
+              } else {
+                "Due: ${SubledgerCalculationEngine.formatPaise(s.outstandingDuesPaise)}"
+              }
+              Text(
+                text = balLabel,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (s.outstandingDuesPaise > 0L) FigmaRed else FigmaTeal
+              )
             }
           }
         }

@@ -29,12 +29,16 @@ import com.example.domain.model.PaymentStatus
 import com.example.domain.model.Product
 import com.example.domain.model.PurchaseInvoiceItem
 import com.example.domain.model.StockMovementType
+import com.example.domain.model.SubledgerEntry
 import com.example.domain.model.SubledgerEntryType
 import com.example.domain.model.Supplier
+import com.example.service.ExportDocumentService
+import com.example.ui.viewmodel.CustomerViewModel
 import com.example.ui.viewmodel.DashboardViewModel
 import com.example.ui.viewmodel.InventoryViewModel
 import com.example.ui.viewmodel.ProductViewModel
 import com.example.ui.viewmodel.ReportsViewModel
+import com.example.ui.viewmodel.SupplierViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -679,5 +683,510 @@ class Phase2FinanceIntegrationAndMigrationTest {
       job.cancel()
       scope.cancel()
     }
+  }
+
+  @Test
+  fun migration2To3_realisticV2DatabaseWithoutAllocationRows_reconstructsAllCases() {
+    val dbName = "icetrack_migration_v2_v3_realistic.db"
+    val t0 = 1710000000000L
+
+    // Create realistic V2 DB WITHOUT synthetic payment_allocations rows for SALES_PAYMENT / PURCHASE_PAYMENT,
+    // covering:
+    // 1. Fully paid V2 sales & purchase invoices
+    // 2. Partially paid V2 sales & purchase invoices
+    // 3. Overpaid V2 invoice (split into INVOICE == total + ADVANCE == excess, header capped)
+    // 4. Standalone unallocated V2 payments (CUSTOMER_PAYMENT / SUPPLIER_PAYMENT)
+    // 5. Customer & supplier invoice numeric ID collision (id=1, id=2, id=3 in both tables)
+    // 6. Multiple chronological invoices & payments + negative V2 OPENING_BALANCE + orphan allocation quarantine (partyId = -1, NOT 0)
+    migrationHelper.createDatabase(dbName, 2).apply {
+      execSQL(
+        "INSERT INTO products (id, name, sku, category, defaultPurchasePricePaise, defaultSellingPricePaise, minStockLevelPieces, isActive, createdAt, deletedAt) " +
+          "VALUES (1, 'Vanilla Bar', 'VB-01', 'Sticks/Bars', 1000, 1500, 10, 1, $t0, NULL)"
+      )
+      execSQL("INSERT INTO product_units (id, productId, piecesPerBox, boxesPerCarton) VALUES (1, 1, 20, 5)")
+      execSQL(
+        "INSERT INTO suppliers (id, name, contactPerson, phoneNumber, address, openingBalancePaise, openingBalanceDate, creditTermsDays, creditLimitPaise, isActive, createdAt, deletedAt) VALUES " +
+          "(1, 'Sup Multi', 'Raju', '9800000001', 'Kochi', 0, $t0, 15, 0, 1, $t0, NULL)," +
+          "(2, 'Sup NegOB', 'Babu', '9800000002', 'Thrissur', -2500, $t0, 15, 0, 1, $t0, NULL)"
+      )
+      execSQL(
+        "INSERT INTO customers (id, shopName, ownerName, phoneNumber, address, openingBalancePaise, openingBalanceDate, creditLimitPaise, paymentTermsDays, isActive, createdAt, deletedAt) VALUES " +
+          "(1, 'Cust Full & Part', 'Anil', '9811111111', 'Ernakulam', 0, $t0, 0, 7, 1, $t0, NULL)," +
+          "(2, 'Cust Overpay & Standalone', 'Suresh', '9822222222', 'Calicut', -4000, $t0, 0, 7, 1, $t0, NULL)"
+      )
+      // Purchase invoices (ids 1, 2, 3 collide with sales invoices 1, 2, 3!)
+      execSQL(
+        "INSERT INTO purchase_invoices (id, invoiceNumber, supplierId, invoiceDate, dueDate, totalAmountPaise, paidAmountPaise, paymentStatus, paymentMethod, notes, isConfirmed, createdAt) VALUES " +
+          "(1, 'PUR-1', 1, $t0, ${t0 + 15 * dayMs}, 10000, 10000, 'PAID', 'CASH', 'Full V2 Pur', 1, $t0)," +
+          "(2, 'PUR-2', 1, ${t0 + dayMs}, ${t0 + 16 * dayMs}, 12000, 5000, 'PARTIALLY_PAID', 'UPI', 'Part V2 Pur', 1, ${t0 + dayMs})," +
+          "(3, 'PUR-3', 1, ${t0 + 2 * dayMs}, ${t0 + 17 * dayMs}, 6000, 9000, 'PAID', 'BANK_TRANSFER', 'Over V2 Pur', 1, ${t0 + 2 * dayMs})"
+      )
+      // Sales invoices (ids 1, 2, 3 collide on numeric id with purchase_invoices!)
+      execSQL(
+        "INSERT INTO sales_invoices (id, invoiceNumber, customerId, invoiceDate, dueDate, totalAmountPaise, paidAmountPaise, paymentStatus, paymentMethod, notes, isConfirmed, createdAt) VALUES " +
+          "(1, 'INV-1', 1, $t0, ${t0 + 7 * dayMs}, 15000, 15000, 'PAID', 'CASH', 'Full V2 Sale', 1, $t0)," +
+          "(2, 'INV-2', 1, ${t0 + dayMs}, ${t0 + 8 * dayMs}, 20000, 8000, 'PARTIALLY_PAID', 'UPI', 'Part V2 Sale', 1, ${t0 + dayMs})," +
+          "(3, 'INV-3', 2, ${t0 + 2 * dayMs}, ${t0 + 9 * dayMs}, 10000, 14500, 'PAID', 'CASH', 'Over V2 Sale', 1, ${t0 + 2 * dayMs})"
+      )
+      // Subledger entries matching genuine V2 writes (NO payment_allocations rows!)
+      execSQL(
+        "INSERT INTO subledger_entries (id, partyType, partyId, entryType, referenceType, referenceId, debitPaise, creditPaise, entryDate, createdAt, notes, isReversed) VALUES " +
+          // Supplier 1
+          "(1, 'SUPPLIER', 1, 'INVOICE', 'PURCHASE_INVOICE', 1, 0, 10000, $t0, $t0, 'PUR-1', 0)," +
+          "(2, 'SUPPLIER', 1, 'PAYMENT', 'PURCHASE_PAYMENT', 1, 10000, 0, $t0, $t0, 'Pay PUR-1', 0)," +
+          "(3, 'SUPPLIER', 1, 'INVOICE', 'PURCHASE_INVOICE', 2, 0, 12000, ${t0 + dayMs}, ${t0 + dayMs}, 'PUR-2', 0)," +
+          "(4, 'SUPPLIER', 1, 'PAYMENT', 'PURCHASE_PAYMENT', 2, 5000, 0, ${t0 + dayMs}, ${t0 + dayMs}, 'Pay PUR-2', 0)," +
+          "(5, 'SUPPLIER', 1, 'INVOICE', 'PURCHASE_INVOICE', 3, 0, 6000, ${t0 + 2 * dayMs}, ${t0 + 2 * dayMs}, 'PUR-3', 0)," +
+          "(6, 'SUPPLIER', 1, 'PAYMENT', 'PURCHASE_PAYMENT', 3, 9000, 0, ${t0 + 2 * dayMs}, ${t0 + 2 * dayMs}, 'Pay PUR-3', 0)," +
+          "(7, 'SUPPLIER', 1, 'PAYMENT', 'SUPPLIER_PAYMENT', 1, 2000, 0, ${t0 + 3 * dayMs}, ${t0 + 3 * dayMs}, 'Standalone sup adv', 0)," +
+          // Supplier 2 negative opening balance
+          "(8, 'SUPPLIER', 2, 'OPENING_BALANCE', 'SUPPLIER_OPENING', 2, 2500, 0, $t0, $t0, 'Neg Sup OB', 0)," +
+          // Customer 1
+          "(9, 'CUSTOMER', 1, 'INVOICE', 'SALES_INVOICE', 1, 15000, 0, $t0, $t0, 'INV-1', 0)," +
+          "(10, 'CUSTOMER', 1, 'PAYMENT', 'SALES_PAYMENT', 1, 0, 15000, $t0, $t0, 'Pay INV-1', 0)," +
+          "(11, 'CUSTOMER', 1, 'INVOICE', 'SALES_INVOICE', 2, 20000, 0, ${t0 + dayMs}, ${t0 + dayMs}, 'INV-2', 0)," +
+          "(12, 'CUSTOMER', 1, 'PAYMENT', 'SALES_PAYMENT', 2, 0, 8000, ${t0 + dayMs}, ${t0 + dayMs}, 'Pay INV-2', 0)," +
+          // Customer 2 negative OB + overpaid invoice + standalone unallocated payment
+          "(13, 'CUSTOMER', 2, 'OPENING_BALANCE', 'CUSTOMER_OPENING', 2, 0, 4000, $t0, $t0, 'Neg Cust OB', 0)," +
+          "(14, 'CUSTOMER', 2, 'INVOICE', 'SALES_INVOICE', 3, 10000, 0, ${t0 + 2 * dayMs}, ${t0 + 2 * dayMs}, 'INV-3', 0)," +
+          "(15, 'CUSTOMER', 2, 'PAYMENT', 'SALES_PAYMENT', 3, 0, 14500, ${t0 + 2 * dayMs}, ${t0 + 2 * dayMs}, 'Pay INV-3', 0)," +
+          "(16, 'CUSTOMER', 2, 'PAYMENT', 'CUSTOMER_PAYMENT', 2, 0, 3500, ${t0 + 3 * dayMs}, ${t0 + 3 * dayMs}, 'Standalone cust adv', 0)"
+      )
+      // Insert 1 orphan/unmatched V2 allocation row pointing to missing payment 999 to verify quarantine (never partyId=0)
+      execSQL(
+        "INSERT INTO payment_allocations (id, paymentId, invoiceId, allocatedAmountPaise, allocatedAt, isReversed) VALUES " +
+          "(1, 999, 888, 1234, $t0, 0)"
+      )
+      close()
+    }
+
+    val migratedDb = migrationHelper.runMigrationsAndValidate(
+      dbName,
+      3,
+      true,
+      DatabaseMigrations.MIGRATION_2_3
+    )
+
+    // Verify orphan row was quarantined with partyId = -1 and isReversed = 1 (zero rows with partyId = 0)
+    migratedDb.query("SELECT COUNT(*) FROM payment_allocations WHERE partyId = 0").use { c ->
+      assertTrue(c.moveToFirst())
+      assertEquals(0L, c.getLong(0))
+    }
+    migratedDb.query("SELECT partyId, isReversed FROM payment_allocations WHERE paymentId = 999").use { c ->
+      assertTrue(c.moveToFirst())
+      assertEquals(-1L, c.getLong(0))
+      assertEquals(1, c.getInt(1))
+    }
+
+    // Verify overpaid headers were capped (PUR-3: 6000, INV-3: 10000) while fully/partially paid stayed exact
+    migratedDb.query("SELECT id, paidAmountPaise, paymentStatus FROM purchase_invoices ORDER BY id ASC").use { c ->
+      val results = mutableListOf<Triple<Long, Long, String>>()
+      while (c.moveToNext()) results.add(Triple(c.getLong(0), c.getLong(1), c.getString(2)))
+      assertEquals(listOf(Triple(1L, 10000L, "PAID"), Triple(2L, 5000L, "PARTIALLY_PAID"), Triple(3L, 6000L, "PAID")), results)
+    }
+    migratedDb.query("SELECT id, paidAmountPaise, paymentStatus FROM sales_invoices ORDER BY id ASC").use { c ->
+      val results = mutableListOf<Triple<Long, Long, String>>()
+      while (c.moveToNext()) results.add(Triple(c.getLong(0), c.getLong(1), c.getString(2)))
+      assertEquals(listOf(Triple(1L, 15000L, "PAID"), Triple(2L, 8000L, "PARTIALLY_PAID"), Triple(3L, 10000L, "PAID")), results)
+    }
+
+    // Verify numeric ID collision isolation & exact reconstructed allocations:
+    // Sup 1 invoices: #1=10000, #2=5000, #3=6000 (total 21000); Sup 1 advances: 3000 (excess PUR-3) + 2000 (standalone) = 5000. Total allocs = 26000 == sum(payments 10000+5000+9000+2000)
+    migratedDb.query("SELECT allocationType, invoiceId, allocatedAmountPaise FROM payment_allocations WHERE partyType = 'SUPPLIER' AND partyId = 1 AND isReversed = 0").use { c ->
+      var invSum = 0L
+      var advSum = 0L
+      val perInv = mutableMapOf<Long, Long>()
+      while (c.moveToNext()) {
+        val type = c.getString(0)
+        val invId = if (c.isNull(1)) null else c.getLong(1)
+        val amt = c.getLong(2)
+        if (type == "INVOICE" && invId != null) {
+          invSum += amt
+          perInv[invId] = (perInv[invId] ?: 0L) + amt
+        } else if (type == "ADVANCE") {
+          advSum += amt
+        }
+      }
+      assertEquals(10000L, perInv[1L])
+      assertEquals(5000L, perInv[2L])
+      assertEquals(6000L, perInv[3L])
+      assertEquals(21000L, invSum)
+      assertEquals(5000L, advSum)
+      assertEquals(26000L, invSum + advSum)
+    }
+
+    // Cust 1: INV-1=15000, INV-2=8000, ADVANCE=0 (total 23000 == sum of payments 15000+8000)
+    migratedDb.query("SELECT allocationType, invoiceId, allocatedAmountPaise FROM payment_allocations WHERE partyType = 'CUSTOMER' AND partyId = 1 AND isReversed = 0").use { c ->
+      var invSum = 0L
+      var advSum = 0L
+      val perInv = mutableMapOf<Long, Long>()
+      while (c.moveToNext()) {
+        val type = c.getString(0)
+        val invId = if (c.isNull(1)) null else c.getLong(1)
+        val amt = c.getLong(2)
+        if (type == "INVOICE" && invId != null) {
+          invSum += amt
+          perInv[invId] = (perInv[invId] ?: 0L) + amt
+        } else if (type == "ADVANCE") {
+          advSum += amt
+        }
+      }
+      assertEquals(15000L, perInv[1L])
+      assertEquals(8000L, perInv[2L])
+      assertEquals(23000L, invSum)
+      assertEquals(0L, advSum)
+    }
+
+    // Cust 2: INV-3=10000, ADVANCE = 4000 (neg OB) + 4500 (overpaid INV-3) + 3500 (standalone) = 12000
+    migratedDb.query("SELECT allocationType, invoiceId, allocatedAmountPaise FROM payment_allocations WHERE partyType = 'CUSTOMER' AND partyId = 2 AND isReversed = 0").use { c ->
+      var invSum = 0L
+      var advSum = 0L
+      while (c.moveToNext()) {
+        val type = c.getString(0)
+        val amt = c.getLong(2)
+        if (type == "INVOICE") invSum += amt else if (type == "ADVANCE") advSum += amt
+      }
+      assertEquals(10000L, invSum)
+      assertEquals(12000L, advSum)
+    }
+
+    // Sup 2: negative V2 opening balance -> 2500 ADVANCE
+    migratedDb.query("SELECT COALESCE(SUM(allocatedAmountPaise), 0) FROM payment_allocations WHERE partyType = 'SUPPLIER' AND partyId = 2 AND allocationType = 'ADVANCE' AND isReversed = 0").use { c ->
+      assertTrue(c.moveToFirst())
+      assertEquals(2500L, c.getLong(0))
+    }
+
+    migratedDb.close()
+    context.deleteDatabase(dbName)
+  }
+
+  @Test
+  fun openingBalanceEdit_reconcilesCustomerAndSupplierAllocationsAndPreservesHistory() = runBlocking {
+    val productRepo = ProductRepository(db)
+    val supplierRepo = SupplierRepository(db)
+    val customerRepo = CustomerRepository(db)
+    val purchaseRepo = PurchaseRepository(db)
+    val salesRepo = SalesRepository(db)
+    val subledgerRepo = SubledgerRepository(db)
+
+    val t0 = 1710000000000L
+    val prodId = productRepo.saveProductWithUnit(
+      Product(name = "OB Test Cone", sku = "OBC-1", category = "Cones", defaultPurchasePricePaise = 1000L, defaultSellingPricePaise = 2000L, minStockLevelPieces = 5),
+      10, 5
+    )
+
+    // --- CUSTOMER OB RECONCILIATION ---
+    // Start with OB = ₹500 (50,000), Invoice #1 = ₹400 (40,000) unpaid, Payment = ₹600 (60,000)
+    // Initial state: OB settled ₹500, Invoice #1 settled ₹100 (PARTIALLY_PAID), Advance = ₹0
+    val cust = Customer(shopName = "OB Shop", ownerName = "A", phoneNumber = "1", address = "", openingBalancePaise = 50000L, openingBalanceDate = t0)
+    val custId = customerRepo.saveCustomer(cust)
+    purchaseRepo.createPurchaseInvoice(
+      supplierRepo.saveSupplier(Supplier(name = "Seed Sup", contactPerson = "", phoneNumber = "", address = "")),
+      "PUR-SEED", t0, 0L,
+      listOf(PurchaseInvoiceItem(productId = prodId, batchNumber = "B1", expiryDate = t0 + 90 * dayMs, quantityPieces = 100, costPerPiecePaise = 1000L, lineTotalPaise = 100000L)),
+      0L, null, ""
+    )
+    val sInvId = salesRepo.createSalesInvoice(
+      custId, "INV-OB-RECON-1", t0 + dayMs, 0L,
+      listOf(SalesRepository.RequestedSaleLine(prodId, 20, 2000L)),
+      0L, null, ""
+    )
+    salesRepo.recordCustomerPayment(custId, 60000L, t0 + 2 * dayMs, PaymentMethod.CASH, "Initial pay")
+
+    val beforeDecAllocs = subledgerRepo.getActiveAllocationsForParty(PartyType.CUSTOMER, custId).first()
+    assertEquals(50000L, beforeDecAllocs.filter { it.allocationType == PaymentAllocationType.OPENING_BALANCE }.sumOf { it.allocatedAmountPaise })
+    assertEquals(10000L, beforeDecAllocs.filter { it.allocationType == PaymentAllocationType.INVOICE && it.invoiceId == sInvId }.sumOf { it.allocatedAmountPaise })
+
+    // 1. Decrease customer OB from ₹500 -> ₹150 (15,000)
+    // Expected: OB settled ₹150, Invoice #1 receives freed ₹350 -> total ₹400 PAID, remaining ₹50 -> ADVANCE!
+    val custLoaded = customerRepo.getById(custId)!!
+    customerRepo.saveCustomer(custLoaded.copy(openingBalancePaise = 15000L), replaceCustomPrices = false)
+
+    val afterDecAllocs = subledgerRepo.getActiveAllocationsForParty(PartyType.CUSTOMER, custId).first()
+    assertEquals(15000L, afterDecAllocs.filter { it.allocationType == PaymentAllocationType.OPENING_BALANCE }.sumOf { it.allocatedAmountPaise })
+    assertEquals(40000L, afterDecAllocs.filter { it.allocationType == PaymentAllocationType.INVOICE && it.invoiceId == sInvId }.sumOf { it.allocatedAmountPaise })
+    assertEquals(5000L, subledgerRepo.getAvailableAdvancePaiseSync(PartyType.CUSTOMER, custId))
+    assertEquals(PaymentStatus.PAID, salesRepo.allSales.first().first { it.id == sInvId }.paymentStatus)
+    assertEquals(40000L, salesRepo.allSales.first().first { it.id == sInvId }.paidAmountPaise)
+
+    // Subledger history preserved: old ₹500 OB entry marked isReversed = true, net OB = 15000 + Inv 40000 - Pay 60000 = -5000
+    val custHistory = subledgerRepo.getAllEntriesIncludingReversedForParty(PartyType.CUSTOMER, custId).first()
+    assertEquals(1, custHistory.count { it.entryType == SubledgerEntryType.OPENING_BALANCE && it.isReversed })
+    assertEquals(-5000L, SubledgerCalculationEngine.calculateCustomerBalance(subledgerRepo.getEntriesForParty(PartyType.CUSTOMER, custId).first()))
+
+    // 2. Increase customer OB from ₹150 -> ₹300 (30,000)
+    // Expected: Prior ₹150 OB allocation stays ₹150, plus ₹50 ADVANCE applies ONLY to remaining ₹150 positive OB -> OB settled ₹200, ADVANCE = ₹0, Invoice #1 remains ₹400 PAID!
+    customerRepo.saveCustomer(customerRepo.getById(custId)!!.copy(openingBalancePaise = 30000L), replaceCustomPrices = false)
+    assertEquals(0L, subledgerRepo.getAvailableAdvancePaiseSync(PartyType.CUSTOMER, custId))
+    val afterIncAllocs = subledgerRepo.getActiveAllocationsForParty(PartyType.CUSTOMER, custId).first()
+    assertEquals(20000L, afterIncAllocs.filter { it.allocationType == PaymentAllocationType.OPENING_BALANCE }.sumOf { it.allocatedAmountPaise })
+    assertEquals(40000L, afterIncAllocs.filter { it.allocationType == PaymentAllocationType.INVOICE && it.invoiceId == sInvId }.sumOf { it.allocatedAmountPaise })
+    assertEquals(10000L, SubledgerCalculationEngine.calculateCustomerBalance(subledgerRepo.getEntriesForParty(PartyType.CUSTOMER, custId).first()))
+
+    // 3. Zero customer OB (30,000 -> 0)
+    // Expected: All ₹200 OB allocations freed -> Inv #1 still PAID ₹400, surplus ₹200 becomes ADVANCE! Net balance = -20000
+    customerRepo.saveCustomer(customerRepo.getById(custId)!!.copy(openingBalancePaise = 0L), replaceCustomPrices = false)
+    val afterZeroAllocs = subledgerRepo.getActiveAllocationsForParty(PartyType.CUSTOMER, custId).first()
+    assertEquals(0L, afterZeroAllocs.filter { it.allocationType == PaymentAllocationType.OPENING_BALANCE }.sumOf { it.allocatedAmountPaise })
+    assertEquals(40000L, afterZeroAllocs.filter { it.allocationType == PaymentAllocationType.INVOICE && it.invoiceId == sInvId }.sumOf { it.allocatedAmountPaise })
+    assertEquals(20000L, subledgerRepo.getAvailableAdvancePaiseSync(PartyType.CUSTOMER, custId))
+    assertEquals(-20000L, SubledgerCalculationEngine.calculateCustomerBalance(subledgerRepo.getEntriesForParty(PartyType.CUSTOMER, custId).first()))
+
+    // --- SUPPLIER OB RECONCILIATION (including old negative OB that settled an invoice) ---
+    val supId = supplierRepo.saveSupplier(
+      Supplier(name = "OB Sup", contactPerson = "", phoneNumber = "", address = "", openingBalancePaise = -25000L, openingBalanceDate = t0)
+    )
+    assertEquals(25000L, subledgerRepo.getAvailableAdvancePaiseSync(PartyType.SUPPLIER, supId))
+
+    // Purchase Bill ₹300 with applyAvailableAdvance = true -> consumes ₹250 OB advance, leaves ₹50 unpaid
+    val pInvId = purchaseRepo.createPurchaseInvoice(
+      supId, "PUR-OB-RECON-1", t0 + dayMs, 0L,
+      listOf(PurchaseInvoiceItem(productId = prodId, batchNumber = "B2", expiryDate = t0 + 90 * dayMs, quantityPieces = 30, costPerPiecePaise = 1000L, lineTotalPaise = 30000L)),
+      0L, null, "", applyAvailableAdvance = true
+    )
+    assertEquals(25000L, purchaseRepo.allPurchases.first().first { it.id == pInvId }.paidAmountPaise)
+    assertEquals(PaymentStatus.PARTIALLY_PAID, purchaseRepo.allPurchases.first().first { it.id == pInvId }.paymentStatus)
+
+    // Now edit supplier OB from -₹250 to -₹100 (-10,000):
+    // Old -₹250 advance allocations are reversed (invoice #1 paid drops 25000->0 UNPAID), new -₹100 advance is re-applied (invoice #1 paid -> 10000 PARTIALLY_PAID)!
+    supplierRepo.saveSupplier(supplierRepo.getById(supId)!!.copy(openingBalancePaise = -10000L))
+    val supInvAfter = purchaseRepo.allPurchases.first().first { it.id == pInvId }
+    assertEquals(10000L, supInvAfter.paidAmountPaise)
+    assertEquals(PaymentStatus.PARTIALLY_PAID, supInvAfter.paymentStatus)
+    assertEquals(0L, subledgerRepo.getAvailableAdvancePaiseSync(PartyType.SUPPLIER, supId))
+    // Payable = 30000 (Bill) - 10000 (Neg OB) = 20000
+    assertEquals(20000L, SubledgerCalculationEngine.calculateSupplierBalance(subledgerRepo.getEntriesForParty(PartyType.SUPPLIER, supId).first()))
+  }
+
+  @Test
+  fun negativeOpeningBalance_createsAvailableAdvanceAndSettlesFutureInvoicesCleanly() = runBlocking {
+    val productRepo = ProductRepository(db)
+    val supplierRepo = SupplierRepository(db)
+    val customerRepo = CustomerRepository(db)
+    val purchaseRepo = PurchaseRepository(db)
+    val salesRepo = SalesRepository(db)
+    val inventoryRepo = InventoryRepository(db)
+    val subledgerRepo = SubledgerRepository(db)
+
+    val t0 = 1710000000000L
+    val prodId = productRepo.saveProductWithUnit(
+      Product(name = "NegOB Tub", sku = "NOB-1", category = "Tubs", defaultPurchasePricePaise = 1000L, defaultSellingPricePaise = 2000L, minStockLevelPieces = 2),
+      10, 5
+    )
+
+    val supId = supplierRepo.saveSupplier(
+      Supplier(name = "Neg OB Sup", contactPerson = "", phoneNumber = "", address = "", openingBalancePaise = -50000L, openingBalanceDate = t0)
+    )
+    val custId = customerRepo.saveCustomer(
+      Customer(shopName = "Neg OB Shop", ownerName = "", phoneNumber = "", address = "", openingBalancePaise = -30000L, openingBalanceDate = t0)
+    )
+
+    // Verify immediate PaymentAllocationType.ADVANCE linked to OPENING_BALANCE subledger entry
+    assertEquals(50000L, subledgerRepo.getAvailableAdvancePaiseSync(PartyType.SUPPLIER, supId))
+    assertEquals(30000L, subledgerRepo.getAvailableAdvancePaiseSync(PartyType.CUSTOMER, custId))
+    val custObEntryId = subledgerRepo.getEntriesForParty(PartyType.CUSTOMER, custId).first()
+      .first { it.entryType == SubledgerEntryType.OPENING_BALANCE }.id
+    val custAdvAlloc = subledgerRepo.getActiveAllocationsForParty(PartyType.CUSTOMER, custId).first()
+      .first { it.allocationType == PaymentAllocationType.ADVANCE }
+    assertEquals(custObEntryId, custAdvAlloc.paymentId)
+    assertEquals(30000L, custAdvAlloc.allocatedAmountPaise)
+
+    // Verify ViewModels expose this negative OB advance
+    val custVm = CustomerViewModel(customerRepo, productRepo, subledgerRepo)
+    val supVm = SupplierViewModel(supplierRepo, subledgerRepo)
+    val dashVm = DashboardViewModel(productRepo, supplierRepo, customerRepo, subledgerRepo, salesRepo, purchaseRepo, inventoryRepo)
+
+    val custRow = awaitState(custVm.customersWithBalance) { it.any { r -> r.customer.id == custId && r.availableAdvancePaise == 30000L } }
+      .first { it.customer.id == custId }
+    assertEquals(-30000L, custRow.outstandingReceivablePaise)
+    assertEquals(30000L, custRow.availableAdvancePaise)
+
+    val supRow = awaitState(supVm.suppliersWithBalance) { it.any { r -> r.supplier.id == supId && r.availableAdvancePaise == 50000L } }
+      .first { it.supplier.id == supId }
+    assertEquals(-50000L, supRow.outstandingPayablePaise)
+    assertEquals(50000L, supRow.availableAdvancePaise)
+
+    val dashState = awaitState(dashVm.uiState) { it.totalCustomerAdvancesPaise == 30000L && it.totalSupplierAdvancesPaise == 50000L }
+    assertEquals(0L, dashState.totalReceivablesPaise)
+    assertEquals(0L, dashState.totalPayablesPaise)
+
+    // Create Purchase ₹400 (40,000) with applyAvailableAdvance = true -> consumes ₹400 of ₹500 sup OB advance, NO duplicate PAYMENT entry
+    val supPaymentsBefore = subledgerRepo.getEntriesForParty(PartyType.SUPPLIER, supId).first().count { it.entryType == SubledgerEntryType.PAYMENT }
+    val pId = purchaseRepo.createPurchaseInvoice(
+      supId, "PUR-NEG-1", t0 + dayMs, 0L,
+      listOf(PurchaseInvoiceItem(productId = prodId, batchNumber = "BN-1", expiryDate = t0 + 90 * dayMs, quantityPieces = 40, costPerPiecePaise = 1000L, lineTotalPaise = 40000L)),
+      0L, null, "", applyAvailableAdvance = true
+    )
+    assertEquals(supPaymentsBefore, subledgerRepo.getEntriesForParty(PartyType.SUPPLIER, supId).first().count { it.entryType == SubledgerEntryType.PAYMENT })
+    assertEquals(40000L, purchaseRepo.allPurchases.first().first { it.id == pId }.paidAmountPaise)
+    assertEquals(10000L, subledgerRepo.getAvailableAdvancePaiseSync(PartyType.SUPPLIER, supId))
+
+    // Create Sale ₹250 (25,000) with applyAvailableAdvance = true -> consumes ₹250 of ₹300 cust OB advance, NO duplicate PAYMENT entry
+    val custPaymentsBefore = subledgerRepo.getEntriesForParty(PartyType.CUSTOMER, custId).first().count { it.entryType == SubledgerEntryType.PAYMENT }
+    val sId = salesRepo.createSalesInvoice(
+      custId, "INV-NEG-1", t0 + dayMs, 0L,
+      listOf(SalesRepository.RequestedSaleLine(prodId, 12, 2000L)), // ₹240 = 24,000 paise
+      0L, null, "", applyAvailableAdvance = true
+    )
+    assertEquals(custPaymentsBefore, subledgerRepo.getEntriesForParty(PartyType.CUSTOMER, custId).first().count { it.entryType == SubledgerEntryType.PAYMENT })
+    assertEquals(24000L, salesRepo.allSales.first().first { it.id == sId }.paidAmountPaise)
+    assertEquals(6000L, subledgerRepo.getAvailableAdvancePaiseSync(PartyType.CUSTOMER, custId))
+    assertEquals(-6000L, SubledgerCalculationEngine.calculateCustomerBalance(subledgerRepo.getEntriesForParty(PartyType.CUSTOMER, custId).first()))
+  }
+
+  @Test
+  fun financialSsotParity_dashboardListsReportsStatementsAndExports_agreeToExactPaisaIncludingArchivedParties() = runBlocking {
+    val productRepo = ProductRepository(db)
+    val supplierRepo = SupplierRepository(db)
+    val customerRepo = CustomerRepository(db)
+    val purchaseRepo = PurchaseRepository(db)
+    val salesRepo = SalesRepository(db)
+    val inventoryRepo = InventoryRepository(db)
+    val expenseRepo = ExpenseRepository(db)
+    val subledgerRepo = SubledgerRepository(db)
+
+    val t0 = System.currentTimeMillis() - 3 * dayMs
+    val prodId = productRepo.saveProductWithUnit(
+      Product(name = "SSOT Kulfi", sku = "SSOT-K", category = "Sticks", defaultPurchasePricePaise = 1000L, defaultSellingPricePaise = 2000L, minStockLevelPieces = 5),
+      10, 5
+    )
+
+    // Suppliers: Active Sup1 (OB +₹100, bill ₹500, paid ₹200 -> net due ₹400), Archived Sup2 (OB ₹250 due), Active Sup3 (OB -₹150 advance)
+    val sup1 = supplierRepo.saveSupplier(Supplier(name = "Active Sup", contactPerson = "", phoneNumber = "", address = "", openingBalancePaise = 10000L, openingBalanceDate = t0))
+    val sup2 = supplierRepo.saveSupplier(Supplier(name = "Archived Sup", contactPerson = "", phoneNumber = "", address = "", openingBalancePaise = 25000L, openingBalanceDate = t0))
+    val sup3 = supplierRepo.saveSupplier(Supplier(name = "Advance Sup", contactPerson = "", phoneNumber = "", address = "", openingBalancePaise = -15000L, openingBalanceDate = t0))
+
+    purchaseRepo.createPurchaseInvoice(
+      sup1, "PUR-S1", t0 + dayMs, 0L,
+      listOf(PurchaseInvoiceItem(productId = prodId, batchNumber = "BS1", expiryDate = t0 + 90 * dayMs, quantityPieces = 50, costPerPiecePaise = 1000L, lineTotalPaise = 50000L)),
+      20000L, PaymentMethod.UPI, ""
+    )
+    supplierRepo.softDelete(sup2)
+
+    // Customers: Active Cust1 (OB ₹200 + Inv ₹300 - Adj ₹50 = ₹450 due), Archived Cust2 (OB ₹180 due), Active Cust3 (Standalone payment ₹120 -> ₹120 advance)
+    val cust1 = customerRepo.saveCustomer(SupplierCompatCustomer("Active Shop", 20000L, t0))
+    val cust2 = customerRepo.saveCustomer(SupplierCompatCustomer("Archived Shop", 18000L, t0))
+    val cust3 = customerRepo.saveCustomer(SupplierCompatCustomer("Advance Shop", 0L, t0))
+
+    salesRepo.createSalesInvoice(
+      cust1, "INV-C1", t0 + dayMs, 0L,
+      listOf(SalesRepository.RequestedSaleLine(prodId, 15, 2000L)),
+      0L, null, ""
+    )
+    // Add credit adjustment of ₹50 (5,000 paise) for Active Shop
+    subledgerRepo.recordEntry(
+      SubledgerEntry(
+        partyType = PartyType.CUSTOMER,
+        partyId = cust1,
+        entryType = SubledgerEntryType.ADJUSTMENT,
+        referenceType = "MANUAL_ADJ",
+        referenceId = 1L,
+        debitPaise = 0L,
+        creditPaise = 5000L,
+        entryDate = t0 + 2 * dayMs,
+        notes = "Damaged goods credit"
+      )
+    )
+    salesRepo.recordCustomerPayment(cust3, 12000L, t0 + 2 * dayMs, PaymentMethod.CASH, "Advance")
+    customerRepo.softDelete(cust2)
+
+    val dashVm = DashboardViewModel(productRepo, supplierRepo, customerRepo, subledgerRepo, salesRepo, purchaseRepo, inventoryRepo)
+    val custVm = CustomerViewModel(customerRepo, productRepo, subledgerRepo)
+    val supVm = SupplierViewModel(supplierRepo, subledgerRepo)
+    val reportsVm = ReportsViewModel(salesRepo, purchaseRepo, productRepo, customerRepo, supplierRepo, inventoryRepo, expenseRepo, subledgerRepo)
+
+    // Expected Customer receivables: Active = 45,000, Archived = 18,000, Total = 63,000; Advances = 12,000
+    // Expected Supplier payables: Active = 40,000, Archived = 25,000, Total = 65,000; Advances = 15,000
+    val dash = awaitState(dashVm.uiState) { it.totalReceivablesPaise == 63000L && it.totalPayablesPaise == 65000L }
+    val cSum = awaitState(custVm.listSummary) { it.totalAllReceivablesPaise == 63000L }
+    val sSum = awaitState(supVm.listSummary) { it.totalAllPayablesPaise == 65000L }
+
+    assertEquals(18000L, dash.archivedReceivablesPaise)
+    assertEquals(25000L, dash.archivedPayablesPaise)
+    assertEquals(12000L, dash.totalCustomerAdvancesPaise)
+    assertEquals(15000L, dash.totalSupplierAdvancesPaise)
+
+    assertEquals(dash.totalReceivablesPaise, cSum.totalAllReceivablesPaise)
+    assertEquals(dash.archivedReceivablesPaise, cSum.totalArchivedReceivablesPaise)
+    assertEquals(dash.totalCustomerAdvancesPaise, cSum.totalAllAdvancesPaise)
+    assertEquals(45000L, cSum.totalActiveReceivablesPaise)
+
+    assertEquals(dash.totalPayablesPaise, sSum.totalAllPayablesPaise)
+    assertEquals(dash.archivedPayablesPaise, sSum.totalArchivedPayablesPaise)
+    assertEquals(dash.totalSupplierAdvancesPaise, sSum.totalAllAdvancesPaise)
+    assertEquals(40000L, sSum.totalActivePayablesPaise)
+
+    // Toggle archived visibility in CustomerViewModel & SupplierViewModel
+    assertEquals(2, custVm.customersWithBalance.value.size)
+    custVm.toggleIncludeArchived()
+    val allCustCards = awaitState(custVm.customersWithBalance) { it.size == 3 }
+    assertEquals(18000L, allCustCards.first { it.customer.id == cust2 }.outstandingReceivablePaise)
+
+    assertEquals(2, supVm.suppliersWithBalance.value.size)
+    supVm.toggleIncludeArchived()
+    val allSupCards = awaitState(supVm.suppliersWithBalance) { it.size == 3 }
+    assertEquals(25000L, allSupCards.first { it.supplier.id == sup2 }.outstandingPayablePaise)
+
+    // ReportsViewModel SSOT: includes OB, Adjustments, Advances, and Archived parties
+    val reports = awaitState(reportsVm.uiState) { it.shopSales.size >= 3 && it.supplierPurchases.size >= 3 }
+    val cust1Perf = reports.shopSales.first { it.customerId == cust1 }
+    assertEquals(30000L, cust1Perf.totalSalesPaise)
+    assertEquals(45000L, cust1Perf.outstandingDuePaise) // OB(200) + Inv(300) - Adj(50)
+    val cust2Perf = reports.shopSales.first { it.customerId == cust2 }
+    assertEquals(18000L, cust2Perf.outstandingDuePaise) // Archived shop OB
+    val cust3Perf = reports.shopSales.first { it.customerId == cust3 }
+    assertEquals(0L, cust3Perf.outstandingDuePaise)
+    assertEquals(12000L, cust3Perf.advanceCreditPaise)
+    assertEquals(dash.totalReceivablesPaise, reports.shopSales.sumOf { it.outstandingDuePaise })
+    assertEquals(dash.totalCustomerAdvancesPaise, reports.shopSales.sumOf { it.advanceCreditPaise })
+
+    val sup1Perf = reports.supplierPurchases.first { it.supplierId == sup1 }
+    assertEquals(40000L, sup1Perf.balancePayablePaise)
+    val sup3Perf = reports.supplierPurchases.first { it.supplierId == sup3 }
+    assertEquals(0L, sup3Perf.balancePayablePaise)
+    assertEquals(15000L, sup3Perf.advanceCreditPaise)
+    assertEquals(dash.totalPayablesPaise, reports.supplierPurchases.sumOf { it.balancePayablePaise })
+    assertEquals(dash.totalSupplierAdvancesPaise, reports.supplierPurchases.sumOf { it.advanceCreditPaise })
+
+    // Statements & ExportDocumentService parity (including archived parties)
+    val allCusts = customerRepo.allCustomersIncludingArchived.first()
+    val allSups = supplierRepo.allSuppliersIncludingArchived.first()
+    val allEntries = subledgerRepo.allEntries.first()
+
+    val cust1Stmt = BusinessReportEngine.buildAccountStatement(
+      partyId = cust1,
+      partyName = "Active Shop",
+      partyType = PartyType.CUSTOMER,
+      entries = allEntries
+    )
+    assertEquals(45000L, cust1Stmt.closingBalancePaise)
+
+    val allCustCsv = ExportDocumentService.generateCustomerStatementCsv(null, allEntries, allCusts)
+    assertTrue("CSV must match exact gross receivables 630.00", allCustCsv.contains("TOTAL RECEIVABLES,,,,630.00,"))
+    assertTrue("CSV must report total advances 120.00", allCustCsv.contains("TOTAL CUSTOMER ADVANCES,,,,120.00,"))
+    assertTrue("CSV must include archived customer", allCustCsv.contains("Archived Shop"))
+
+    val allSupCsv = ExportDocumentService.generateSupplierStatementCsv(null, allEntries, allSups)
+    assertTrue("CSV must match exact gross payables 650.00", allSupCsv.contains("TOTAL PAYABLES,,,,650.00,"))
+    assertTrue("CSV must report total supplier advances 150.00", allSupCsv.contains("TOTAL ADVANCES PAID,,,,150.00,"))
+    assertTrue("CSV must include archived supplier", allSupCsv.contains("Archived Sup"))
+
+    val xlsxDir = context.cacheDir.resolve("ssot_export_test").apply { mkdirs() }
+    val custXlsx = ExportDocumentService.generateCustomerStatementXlsx(context, null, allEntries, allCusts, overrideDir = xlsxDir)
+    val supXlsx = ExportDocumentService.generateSupplierStatementXlsx(context, null, allEntries, allSups, overrideDir = xlsxDir)
+    assertTrue(ExportDocumentService.validateExportedFile(custXlsx, com.example.service.ExportFormat.XLSX))
+    assertTrue(ExportDocumentService.validateExportedFile(supXlsx, com.example.service.ExportFormat.XLSX))
+    xlsxDir.deleteRecursively()
+  }
+
+  private fun SupplierCompatCustomer(name: String, obPaise: Long, obDate: Long): Customer {
+    return Customer(
+      shopName = name,
+      ownerName = "Owner",
+      phoneNumber = "9999999999",
+      address = "Addr",
+      openingBalancePaise = obPaise,
+      openingBalanceDate = obDate
+    )
   }
 }

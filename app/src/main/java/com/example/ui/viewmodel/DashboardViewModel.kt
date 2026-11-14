@@ -28,6 +28,10 @@ data class DashboardUiState(
   val totalPayablesPaise: Long = 0L,
   val totalCustomerAdvancesPaise: Long = 0L,
   val totalSupplierAdvancesPaise: Long = 0L,
+  val archivedReceivablesPaise: Long = 0L,
+  val archivedPayablesPaise: Long = 0L,
+  val archivedCustomerAdvancesPaise: Long = 0L,
+  val archivedSupplierAdvancesPaise: Long = 0L,
   val todaySalesPaise: Long = 0L,
   val todaySalesCount: Int = 0,
   val todayPurchasesPaise: Long = 0L,
@@ -42,6 +46,15 @@ private data class MasterCounts(
   val products: Int,
   val suppliers: Int,
   val customers: Int
+)
+
+private data class PartiesAndAllocationsSnapshot(
+  val archivedCustomerIds: Set<Long>,
+  val archivedSupplierIds: Set<Long>,
+  val totalCustAdv: Long,
+  val archivedCustAdv: Long,
+  val totalSupAdv: Long,
+  val archivedSupAdv: Long
 )
 
 class DashboardViewModel(
@@ -60,17 +73,26 @@ class DashboardViewModel(
     customerRepository.activeCustomerCount
   ) { p, s, c -> MasterCounts(p, s, c) }
 
-  private val advancesFlow = combine(
+  private val partySnapshotFlow = combine(
+    customerRepository.allCustomersIncludingArchived,
+    supplierRepository.allSuppliersIncludingArchived,
     subledgerRepository.getAllActiveAllocationsByPartyType(PartyType.CUSTOMER),
     subledgerRepository.getAllActiveAllocationsByPartyType(PartyType.SUPPLIER)
-  ) { custAllocs, supAllocs ->
-    val custAdv = custAllocs
-      .filter { !it.isReversed && it.allocationType == PaymentAllocationType.ADVANCE }
-      .sumOf { it.allocatedAmountPaise }
-    val supAdv = supAllocs
-      .filter { !it.isReversed && it.allocationType == PaymentAllocationType.ADVANCE }
-      .sumOf { it.allocatedAmountPaise }
-    custAdv to supAdv
+  ) { allCusts, allSups, custAllocs, supAllocs ->
+    val archivedCustIds = allCusts.filter { !it.isActive }.map { it.id }.toSet()
+    val archivedSupIds = allSups.filter { !it.isActive }.map { it.id }.toSet()
+
+    val activeCustAdvAllocs = custAllocs.filter { !it.isReversed && it.allocationType == PaymentAllocationType.ADVANCE }
+    val activeSupAdvAllocs = supAllocs.filter { !it.isReversed && it.allocationType == PaymentAllocationType.ADVANCE }
+
+    PartiesAndAllocationsSnapshot(
+      archivedCustomerIds = archivedCustIds,
+      archivedSupplierIds = archivedSupIds,
+      totalCustAdv = activeCustAdvAllocs.sumOf { it.allocatedAmountPaise },
+      archivedCustAdv = activeCustAdvAllocs.filter { it.partyId in archivedCustIds }.sumOf { it.allocatedAmountPaise },
+      totalSupAdv = activeSupAdvAllocs.sumOf { it.allocatedAmountPaise },
+      archivedSupAdv = activeSupAdvAllocs.filter { it.partyId in archivedSupIds }.sumOf { it.allocatedAmountPaise }
+    )
   }
 
   private val catalogAndStockFlow = combine(
@@ -86,19 +108,31 @@ class DashboardViewModel(
     subledgerRepository.allEntries,
     salesRepository.allSales,
     purchaseRepository.allPurchases,
-    advancesFlow
-  ) { (counts, activeProducts, batches), entries, sales, purchases, (custAdv, supAdv) ->
+    partySnapshotFlow
+  ) { (counts, activeProducts, batches), entries, sales, purchases, partySnapshot ->
     val now = System.currentTimeMillis()
     val activeEntries = entries.filter { !it.isReversed }
 
     val customerEntriesByParty = activeEntries.filter { it.partyType == PartyType.CUSTOMER }.groupBy { it.partyId }
-    val totalReceivables = customerEntriesByParty.values.sumOf { partyEntries ->
-      SubledgerCalculationEngine.calculateCustomerBalance(partyEntries).coerceAtLeast(0L)
+    var totalReceivables = 0L
+    var archivedReceivables = 0L
+    customerEntriesByParty.forEach { (custId, partyEntries) ->
+      val bal = SubledgerCalculationEngine.calculateCustomerBalance(partyEntries).coerceAtLeast(0L)
+      totalReceivables += bal
+      if (custId in partySnapshot.archivedCustomerIds) {
+        archivedReceivables += bal
+      }
     }
 
     val supplierEntriesByParty = activeEntries.filter { it.partyType == PartyType.SUPPLIER }.groupBy { it.partyId }
-    val totalPayables = supplierEntriesByParty.values.sumOf { partyEntries ->
-      SubledgerCalculationEngine.calculateSupplierBalance(partyEntries).coerceAtLeast(0L)
+    var totalPayables = 0L
+    var archivedPayables = 0L
+    supplierEntriesByParty.forEach { (supId, partyEntries) ->
+      val bal = SubledgerCalculationEngine.calculateSupplierBalance(partyEntries).coerceAtLeast(0L)
+      totalPayables += bal
+      if (supId in partySnapshot.archivedSupplierIds) {
+        archivedPayables += bal
+      }
     }
 
     val todayStart = BusinessReportEngine.computeStartDate("TODAY", now) ?: (now - 86400000L)
@@ -118,8 +152,12 @@ class DashboardViewModel(
       customerCount = counts.customers,
       totalReceivablesPaise = totalReceivables,
       totalPayablesPaise = totalPayables,
-      totalCustomerAdvancesPaise = custAdv,
-      totalSupplierAdvancesPaise = supAdv,
+      totalCustomerAdvancesPaise = partySnapshot.totalCustAdv,
+      totalSupplierAdvancesPaise = partySnapshot.totalSupAdv,
+      archivedReceivablesPaise = archivedReceivables,
+      archivedPayablesPaise = archivedPayables,
+      archivedCustomerAdvancesPaise = partySnapshot.archivedCustAdv,
+      archivedSupplierAdvancesPaise = partySnapshot.archivedSupAdv,
       todaySalesPaise = todaySalesTotal,
       todaySalesCount = todaySalesList.size,
       todayPurchasesPaise = todayPurchasesTotal,

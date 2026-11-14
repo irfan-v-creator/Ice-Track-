@@ -34,7 +34,8 @@ data class ShopSalesPerformance(
   val invoiceCount: Int,
   val totalSalesPaise: Long,
   val paidAmountPaise: Long,
-  val outstandingDuesPaise: Long
+  val outstandingDuesPaise: Long,
+  val advanceCreditPaise: Long = 0L
 )
 
 data class SupplierPurchaseSummary(
@@ -43,7 +44,8 @@ data class SupplierPurchaseSummary(
   val billCount: Int,
   val totalPurchasedPaise: Long,
   val totalPaidPaise: Long,
-  val balancePayablePaise: Long
+  val balancePayablePaise: Long,
+  val advanceCreditPaise: Long = 0L
 )
 
 data class AccountStatementLine(
@@ -204,18 +206,35 @@ object BusinessReportEngine {
 
   /**
    * Calculates Shop-wise sales performance and outstanding receivables per customer.
+   * When [subledgerEntries] is provided, outstanding dues and advance credits come directly
+   * from the authoritative subledger (including opening balances, adjustments, and advances).
    */
   fun calculateShopSales(
     customers: Map<Long, String>, // customerId -> shopName
-    salesInvoices: List<SalesInvoice>
+    salesInvoices: List<SalesInvoice>,
+    subledgerEntries: List<SubledgerEntry>? = null
   ): List<ShopSalesPerformance> {
     val invoicesByCustomer = salesInvoices.groupBy { it.customerId }
+    val entriesByCustomer = subledgerEntries
+      ?.filter { !it.isReversed && it.partyType == PartyType.CUSTOMER }
+      ?.groupBy { it.partyId }
 
     return customers.map { (customerId, shopName) ->
       val invoices = invoicesByCustomer[customerId] ?: emptyList()
       val totalSales = invoices.sumOf { it.totalAmountPaise }
       val paidAmount = invoices.sumOf { it.paidAmountPaise }
-      val outstanding = (totalSales - paidAmount).coerceAtLeast(0L)
+      val outstanding: Long
+      val advanceCredit: Long
+      if (entriesByCustomer != null) {
+        val ledgerBalance = SubledgerCalculationEngine.calculateCustomerBalance(
+          entriesByCustomer[customerId] ?: emptyList()
+        )
+        outstanding = ledgerBalance.coerceAtLeast(0L)
+        advanceCredit = (-ledgerBalance).coerceAtLeast(0L)
+      } else {
+        outstanding = (totalSales - paidAmount).coerceAtLeast(0L)
+        advanceCredit = 0L
+      }
 
       ShopSalesPerformance(
         customerId = customerId,
@@ -223,31 +242,51 @@ object BusinessReportEngine {
         invoiceCount = invoices.size,
         totalSalesPaise = totalSales,
         paidAmountPaise = paidAmount,
-        outstandingDuesPaise = outstanding
+        outstandingDuesPaise = outstanding,
+        advanceCreditPaise = advanceCredit
       )
     }.sortedByDescending { it.totalSalesPaise }
   }
 
   /**
    * Calculates Supplier-wise purchase totals and payables across filtered purchase invoices.
+   * When [subledgerEntries] is provided, payable and advance credit balances come directly
+   * from the authoritative subledger.
    */
   fun calculateSupplierPurchases(
     suppliers: Map<Long, String>,
-    purchaseInvoices: List<PurchaseInvoice>
+    purchaseInvoices: List<PurchaseInvoice>,
+    subledgerEntries: List<SubledgerEntry>? = null
   ): List<SupplierPurchaseSummary> {
     val bySupplier = purchaseInvoices.groupBy { it.supplierId }
+    val entriesBySupplier = subledgerEntries
+      ?.filter { !it.isReversed && it.partyType == PartyType.SUPPLIER }
+      ?.groupBy { it.partyId }
+
     return suppliers.map { (supplierId, supplierName) ->
       val bills = bySupplier[supplierId] ?: emptyList()
       val total = bills.sumOf { it.totalAmountPaise }
       val paid = bills.sumOf { it.paidAmountPaise }
-      val payable = (total - paid).coerceAtLeast(0L)
+      val payable: Long
+      val advanceCredit: Long
+      if (entriesBySupplier != null) {
+        val ledgerBalance = SubledgerCalculationEngine.calculateSupplierBalance(
+          entriesBySupplier[supplierId] ?: emptyList()
+        )
+        payable = ledgerBalance.coerceAtLeast(0L)
+        advanceCredit = (-ledgerBalance).coerceAtLeast(0L)
+      } else {
+        payable = (total - paid).coerceAtLeast(0L)
+        advanceCredit = 0L
+      }
       SupplierPurchaseSummary(
         supplierId = supplierId,
         supplierName = supplierName,
         billCount = bills.size,
         totalPurchasedPaise = total,
         totalPaidPaise = paid,
-        balancePayablePaise = payable
+        balancePayablePaise = payable,
+        advanceCreditPaise = advanceCredit
       )
     }.sortedByDescending { it.totalPurchasedPaise }
   }

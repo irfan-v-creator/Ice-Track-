@@ -172,7 +172,8 @@ class ReportsViewModel(
     }
     val shpSales = BusinessReportEngine.calculateShopSales(
       customers = custMap,
-      salesInvoices = filteredSales
+      salesInvoices = filteredSales,
+      subledgerEntries = ledger
     )
 
     val supMap = relevantSuppliers.associate {
@@ -180,7 +181,8 @@ class ReportsViewModel(
     }
     val supPurchases = BusinessReportEngine.calculateSupplierPurchases(
       suppliers = supMap,
-      purchaseInvoices = filteredPurchases
+      purchaseInvoices = filteredPurchases,
+      subledgerEntries = ledger
     )
 
     ReportsUiState(
@@ -289,10 +291,10 @@ class ReportsViewModel(
             ReportExportType.SALES -> state.salesInvoices.size
             ReportExportType.PURCHASE -> state.purchaseInvoices.size
             ReportExportType.CUSTOMER_STATEMENT -> state.selectedCustomerId?.let { id ->
-              state.subledgerEntries.count { !it.isReversed && it.partyId == id }
+              state.subledgerEntries.count { !it.isReversed && it.partyType == PartyType.CUSTOMER && it.partyId == id }
             } ?: state.customers.size
             ReportExportType.SUPPLIER_STATEMENT -> state.selectedSupplierId?.let { id ->
-              state.subledgerEntries.count { !it.isReversed && it.partyId == id }
+              state.subledgerEntries.count { !it.isReversed && it.partyType == PartyType.SUPPLIER && it.partyId == id }
             } ?: state.suppliers.size
             ReportExportType.INVENTORY_FEFO -> state.batches.size
           }

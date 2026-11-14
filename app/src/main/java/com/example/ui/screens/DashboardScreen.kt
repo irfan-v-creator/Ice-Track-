@@ -229,14 +229,19 @@ fun DashboardScreen(
           horizontalArrangement = Arrangement.SpaceBetween,
           verticalAlignment = Alignment.CenterVertically
         ) {
-          Column {
+          Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
             Text(text = "Customer outstanding", style = MaterialTheme.typography.bodyMedium, color = FigmaMuted)
+            val custSubtitle = buildString {
+              append("${state.customerCount} active shops")
+              if (state.archivedReceivablesPaise > 0L) {
+                append(" · incl. ${SubledgerCalculationEngine.formatPaise(state.archivedReceivablesPaise)} archived")
+              }
+              if (state.totalCustomerAdvancesPaise > 0L) {
+                append(" · Adv credit: ${SubledgerCalculationEngine.formatPaise(state.totalCustomerAdvancesPaise)}")
+              }
+            }
             Text(
-              text = if (state.totalCustomerAdvancesPaise > 0L) {
-                "${state.customerCount} shops · Adv credit: ${SubledgerCalculationEngine.formatPaise(state.totalCustomerAdvancesPaise)}"
-              } else {
-                "${state.customerCount} retail shops"
-              },
+              text = custSubtitle,
               style = MaterialTheme.typography.labelSmall,
               color = if (state.totalCustomerAdvancesPaise > 0L) FigmaTeal else FigmaMuted
             )
@@ -258,14 +263,19 @@ fun DashboardScreen(
           horizontalArrangement = Arrangement.SpaceBetween,
           verticalAlignment = Alignment.CenterVertically
         ) {
-          Column {
+          Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
             Text(text = "Supplier payables", style = MaterialTheme.typography.bodyMedium, color = FigmaMuted)
+            val supSubtitle = buildString {
+              append("${state.supplierCount} active units")
+              if (state.archivedPayablesPaise > 0L) {
+                append(" · incl. ${SubledgerCalculationEngine.formatPaise(state.archivedPayablesPaise)} archived")
+              }
+              if (state.totalSupplierAdvancesPaise > 0L) {
+                append(" · Adv paid: ${SubledgerCalculationEngine.formatPaise(state.totalSupplierAdvancesPaise)}")
+              }
+            }
             Text(
-              text = if (state.totalSupplierAdvancesPaise > 0L) {
-                "${state.supplierCount} units · Adv paid: ${SubledgerCalculationEngine.formatPaise(state.totalSupplierAdvancesPaise)}"
-              } else {
-                "${state.supplierCount} production units"
-              },
+              text = supSubtitle,
               style = MaterialTheme.typography.labelSmall,
               color = if (state.totalSupplierAdvancesPaise > 0L) FigmaTeal else FigmaMuted
             )

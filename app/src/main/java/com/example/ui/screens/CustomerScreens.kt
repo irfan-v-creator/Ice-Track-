@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -67,6 +68,7 @@ import com.example.ui.theme.FigmaBackground
 import com.example.ui.theme.FigmaInk
 import com.example.ui.theme.FigmaLine
 import com.example.ui.theme.FigmaMuted
+import com.example.ui.theme.FigmaNavy
 import com.example.ui.theme.FigmaRed
 import com.example.ui.theme.FigmaSoftTeal
 import com.example.ui.theme.FigmaTeal
@@ -81,6 +83,8 @@ fun CustomerListScreen(
 ) {
   val customersWithBalance by viewModel.customersWithBalance.collectAsState()
   val searchQuery by viewModel.searchQuery.collectAsState()
+  val includeArchived by viewModel.includeArchived.collectAsState()
+  val listSummary by viewModel.listSummary.collectAsState()
   val formState by viewModel.formState.collectAsState()
   val allProducts by viewModel.allProducts.collectAsState()
 
@@ -131,7 +135,66 @@ fun CustomerListScreen(
           .testTag("customer_search_input")
       )
 
-      Spacer(modifier = Modifier.height(14.dp))
+      Spacer(modifier = Modifier.height(10.dp))
+
+      if (listSummary.totalAllReceivablesPaise > 0L || listSummary.totalAllAdvancesPaise > 0L || listSummary.archivedCount > 0) {
+        Surface(
+          shape = RoundedCornerShape(10.dp),
+          color = FigmaWhite,
+          modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, FigmaLine, RoundedCornerShape(10.dp))
+            .testTag("customer_ssot_summary")
+        ) {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "Total Receivables: ${SubledgerCalculationEngine.formatPaise(listSummary.totalAllReceivablesPaise)}",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = FigmaInk
+              )
+              if (listSummary.totalArchivedReceivablesPaise > 0L || listSummary.totalAllAdvancesPaise > 0L) {
+                val detail = buildString {
+                  if (listSummary.totalArchivedReceivablesPaise > 0L) {
+                    append("Archived due: ${SubledgerCalculationEngine.formatPaise(listSummary.totalArchivedReceivablesPaise)}")
+                  }
+                  if (listSummary.totalAllAdvancesPaise > 0L) {
+                    if (isNotEmpty()) append(" · ")
+                    append("Adv credit: ${SubledgerCalculationEngine.formatPaise(listSummary.totalAllAdvancesPaise)}")
+                  }
+                }
+                Text(text = detail, fontSize = 11.sp, color = FigmaTeal)
+              }
+            }
+            if (listSummary.archivedCount > 0) {
+              Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = if (includeArchived) FigmaNavy else FigmaSoftTeal,
+                modifier = Modifier
+                  .border(1.dp, if (includeArchived) FigmaNavy else FigmaTeal, RoundedCornerShape(8.dp))
+                  .clickable { viewModel.toggleIncludeArchived() }
+                  .testTag("toggle_archived_customers")
+              ) {
+                Text(
+                  text = if (includeArchived) "Showing Archived (${listSummary.archivedCount})" else "Show Archived (${listSummary.archivedCount})",
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.SemiBold,
+                  color = if (includeArchived) FigmaWhite else FigmaTeal,
+                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                )
+              }
+            }
+          }
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+      }
 
       if (customersWithBalance.isEmpty()) {
         EmptyStateView(
@@ -217,10 +280,10 @@ fun CustomerCard(
       ) {
         Column(modifier = Modifier.weight(1f)) {
           Text(
-            text = customer.shopName,
+            text = if (customer.isActive) customer.shopName else "${customer.shopName} (Archived)",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
-            color = FigmaInk
+            color = if (customer.isActive) FigmaInk else FigmaMuted
           )
           if (customer.ownerName.isNotBlank()) {
             Spacer(modifier = Modifier.height(2.dp))
@@ -257,8 +320,10 @@ fun CustomerCard(
           IconButton(onClick = onEdit) {
             Icon(Icons.Default.Edit, contentDescription = "Edit", tint = FigmaTeal)
           }
-          IconButton(onClick = onDelete) {
-            Icon(Icons.Default.Delete, contentDescription = "Delete", tint = FigmaRed)
+          if (customer.isActive) {
+            IconButton(onClick = onDelete) {
+              Icon(Icons.Default.Delete, contentDescription = "Delete", tint = FigmaRed)
+            }
           }
         }
       }

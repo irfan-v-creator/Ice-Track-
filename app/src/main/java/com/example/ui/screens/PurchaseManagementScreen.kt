@@ -6,6 +6,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -115,6 +117,7 @@ fun PurchaseManagementScreen(
 
   var showNewInvoiceDialog by remember { mutableStateOf(false) }
   var pendingCreditOverride by remember { mutableStateOf<PendingPurchaseCreditOverride?>(null) }
+  var overrideFailureError by remember { mutableStateOf<String?>(null) }
   var showPaymentDialog by remember { mutableStateOf<Supplier?>(null) }
   var selectedInvoiceForDetail by remember { mutableStateOf<PurchaseInvoice?>(null) }
   val snackbarHostState = remember { SnackbarHostState() }
@@ -125,7 +128,11 @@ fun PurchaseManagementScreen(
     snackbarHost = { SnackbarHost(snackbarHostState) },
     floatingActionButton = {
       FloatingActionButton(
-        onClick = { showNewInvoiceDialog = true },
+        onClick = {
+          overrideFailureError = null
+          pendingCreditOverride = null
+          showNewInvoiceDialog = true
+        },
         containerColor = FigmaTeal,
         contentColor = FigmaWhite,
         modifier = Modifier.testTag("new_purchase_fab")
@@ -233,9 +240,19 @@ fun PurchaseManagementScreen(
       supplierBalances = supplierBalances,
       supplierAdvances = supplierAdvances,
       isSubmitting = isSubmitting,
+      externalErrorMessage = overrideFailureError,
+      onClearExternalError = {
+        overrideFailureError = null
+        pendingCreditOverride = null
+      },
       onGenerateInvoiceNumber = { viewModel.generateNextInvoiceNumber() },
-      onDismiss = { showNewInvoiceDialog = false },
+      onDismiss = {
+        pendingCreditOverride = null
+        overrideFailureError = null
+        showNewInvoiceDialog = false
+      },
       onSubmit = { supplierId, invNum, invDate, dueDate, items, paidAmount, method, notes, applyAdvance, onError ->
+        overrideFailureError = null
         viewModel.createPurchaseInvoice(
           supplierId = supplierId,
           invoiceNumber = invNum,
@@ -261,7 +278,11 @@ fun PurchaseManagementScreen(
               assessment = assessment
             )
           },
-          onSuccess = { showNewInvoiceDialog = false },
+          onSuccess = {
+            pendingCreditOverride = null
+            overrideFailureError = null
+            showNewInvoiceDialog = false
+          },
           onError = onError
         )
       }
@@ -302,10 +323,12 @@ fun PurchaseManagementScreen(
               allowCreditLimitOverride = true,
               onSuccess = {
                 pendingCreditOverride = null
+                overrideFailureError = null
                 showNewInvoiceDialog = false
               },
               onError = { err ->
                 pendingCreditOverride = null
+                overrideFailureError = err
                 scope.launch { snackbarHostState.showSnackbar(err) }
               }
             )
@@ -458,6 +481,7 @@ fun PurchaseInvoiceCard(
   }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CreatePurchaseInvoiceDialog(
   suppliers: List<Supplier>,
@@ -465,6 +489,8 @@ fun CreatePurchaseInvoiceDialog(
   supplierBalances: Map<Long, Long> = emptyMap(),
   supplierAdvances: Map<Long, Long> = emptyMap(),
   isSubmitting: Boolean = false,
+  externalErrorMessage: String? = null,
+  onClearExternalError: () -> Unit = {},
   onGenerateInvoiceNumber: suspend () -> String = { "PUR-${System.currentTimeMillis() % 100000}" },
   onDismiss: () -> Unit,
   onSubmit: (Long, String, Long, Long, List<PurchaseItemDraft>, Long, PaymentMethod?, String, Boolean, (String) -> Unit) -> Unit
@@ -520,7 +546,11 @@ fun CreatePurchaseInvoiceDialog(
           Row(
             modifier = Modifier
               .fillMaxWidth()
-              .clickable { selectedSupplierId = sup.id }
+              .clickable {
+                selectedSupplierId = sup.id
+                errorMessage = null
+                onClearExternalError()
+              }
               .background(
                 if (selectedSupplierId == sup.id) FigmaSoftTeal else FigmaWhite,
                 RoundedCornerShape(6.dp)
@@ -565,7 +595,11 @@ fun CreatePurchaseInvoiceDialog(
 
         OutlinedTextField(
           value = invoiceNumber,
-          onValueChange = { invoiceNumber = it },
+          onValueChange = {
+            invoiceNumber = it
+            errorMessage = null
+            onClearExternalError()
+          },
           label = { Text("Invoice Number / Ref") },
           modifier = Modifier.fillMaxWidth()
         )
@@ -713,7 +747,11 @@ fun CreatePurchaseInvoiceDialog(
 
           OutlinedTextField(
             value = paidAmountRupees,
-            onValueChange = { paidAmountRupees = it },
+            onValueChange = {
+              paidAmountRupees = it
+              errorMessage = null
+              onClearExternalError()
+            },
             label = { Text("Initial Payment Made (₹)") },
             modifier = Modifier.fillMaxWidth()
           )
@@ -723,12 +761,18 @@ fun CreatePurchaseInvoiceDialog(
             Row(
               modifier = Modifier
                 .fillMaxWidth()
-                .clickable { applyAvailableAdvance = !applyAvailableAdvance },
+                .clickable {
+                  applyAvailableAdvance = !applyAvailableAdvance
+                  onClearExternalError()
+                },
               verticalAlignment = Alignment.CenterVertically
             ) {
               Checkbox(
                 checked = applyAvailableAdvance,
-                onCheckedChange = { applyAvailableAdvance = it },
+                onCheckedChange = {
+                  applyAvailableAdvance = it
+                  onClearExternalError()
+                },
                 colors = CheckboxDefaults.colors(checkedColor = FigmaTeal)
               )
               Text(
@@ -752,9 +796,37 @@ fun CreatePurchaseInvoiceDialog(
               fontWeight = FontWeight.Medium
             )
           }
+
+          Text(text = "Payment Method:", fontSize = 12.sp, color = FigmaMuted)
+          FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+          ) {
+            PaymentMethod.values().forEach { method ->
+              Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = if (paymentMethod == method) FigmaTeal else FigmaWhite,
+                modifier = Modifier
+                  .border(1.dp, if (paymentMethod == method) FigmaTeal else FigmaLine, RoundedCornerShape(6.dp))
+                  .clickable {
+                    paymentMethod = method
+                    onClearExternalError()
+                  }
+                  .testTag("purchase_payment_method_${method.name}")
+                  .padding(horizontal = 8.dp, vertical = 4.dp)
+              ) {
+                Text(
+                  text = method.displayName,
+                  fontSize = 11.sp,
+                  color = if (paymentMethod == method) FigmaWhite else FigmaInk
+                )
+              }
+            }
+          }
         }
 
-        errorMessage?.let { err ->
+        val displayedError = errorMessage ?: externalErrorMessage
+        displayedError?.let { err ->
           Surface(
             color = FigmaRed.copy(alpha = 0.08f),
             shape = RoundedCornerShape(8.dp),
@@ -948,14 +1020,19 @@ fun RecordSupplierPaymentDialog(
         }
 
         Text(text = "Payment Method:", fontSize = 12.sp, color = FigmaMuted)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-          PaymentMethod.values().take(3).forEach { method ->
+        @OptIn(ExperimentalLayoutApi::class)
+        FlowRow(
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+          PaymentMethod.values().forEach { method ->
             Surface(
               shape = RoundedCornerShape(8.dp),
               color = if (selectedMethod == method) FigmaTeal else FigmaWhite,
               modifier = Modifier
                 .border(1.dp, if (selectedMethod == method) FigmaTeal else FigmaLine, RoundedCornerShape(8.dp))
                 .clickable { selectedMethod = method }
+                .testTag("supplier_payment_method_${method.name}")
                 .padding(horizontal = 10.dp, vertical = 6.dp)
             ) {
               Text(
