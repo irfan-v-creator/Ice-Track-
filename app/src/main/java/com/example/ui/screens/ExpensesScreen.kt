@@ -33,6 +33,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -41,7 +43,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -70,12 +74,16 @@ fun ExpensesScreen(
   modifier: Modifier = Modifier
 ) {
   val expenses by viewModel.allExpenses.collectAsState()
+  val isSubmitting by viewModel.isSubmitting.collectAsState()
   var showAddDialog by remember { mutableStateOf(false) }
+  val snackbarHostState = remember { SnackbarHostState() }
+  val scope = rememberCoroutineScope()
 
   val totalExpensePaise = expenses.sumOf { it.amountPaise }
 
   Scaffold(
     containerColor = FigmaBackground,
+    snackbarHost = { SnackbarHost(snackbarHostState) },
     floatingActionButton = {
       FloatingActionButton(
         onClick = { showAddDialog = true },
@@ -137,7 +145,11 @@ fun ExpensesScreen(
           items(expenses, key = { it.id }) { expense ->
             ExpenseItemCard(
               expense = expense,
-              onDelete = { viewModel.softDeleteExpense(expense.id) }
+              onDelete = {
+                viewModel.softDeleteExpense(expense.id) { err ->
+                  scope.launch { snackbarHostState.showSnackbar(err) }
+                }
+              }
             )
           }
         }
@@ -147,6 +159,7 @@ fun ExpensesScreen(
 
   if (showAddDialog) {
     RecordExpenseDialog(
+      isSubmitting = isSubmitting,
       onDismiss = { showAddDialog = false },
       onSubmit = { cat, amount, date, method, ref, notes, onError ->
         viewModel.recordExpense(
@@ -217,6 +230,7 @@ fun ExpenseItemCard(
 
 @Composable
 fun RecordExpenseDialog(
+  isSubmitting: Boolean = false,
   onDismiss: () -> Unit,
   onSubmit: (ExpenseCategory, Long, Long, PaymentMethod, String, String, (String) -> Unit) -> Unit
 ) {
@@ -268,19 +282,28 @@ fun RecordExpenseDialog(
           modifier = Modifier.fillMaxWidth()
         )
 
-        errorMessage?.let {
-          Text(text = it, color = FigmaRed, fontSize = 12.sp)
+        errorMessage?.let { err ->
+          Surface(
+            color = FigmaRed.copy(alpha = 0.08f),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .border(1.dp, FigmaRed.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+          ) {
+            Text(text = err, color = FigmaRed, fontSize = 12.sp, modifier = Modifier.padding(8.dp))
+          }
         }
       }
     },
     confirmButton = {
       Button(
         onClick = {
-          val paise = SubledgerCalculationEngine.parseRupeesToPaise(amountInput)
-          if (paise <= 0) {
-            errorMessage = "Please enter a valid expense amount"
+          val paise = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(amountInput)
+          if (paise == null || paise <= 0L) {
+            errorMessage = "Please enter a valid positive expense amount"
             return@Button
           }
+          errorMessage = null
           onSubmit(
             selectedCategory,
             paise,
@@ -292,9 +315,10 @@ fun RecordExpenseDialog(
             errorMessage = err
           }
         },
+        enabled = !isSubmitting,
         colors = ButtonDefaults.buttonColors(containerColor = FigmaTeal, contentColor = FigmaWhite)
       ) {
-        Text("Save Expense")
+        Text(if (isSubmitting) "Saving..." else "Save Expense")
       }
     },
     dismissButton = {

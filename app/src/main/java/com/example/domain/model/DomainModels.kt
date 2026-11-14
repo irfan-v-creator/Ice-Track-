@@ -98,9 +98,13 @@ data class SubledgerEntry(
 data class PaymentAllocation(
   val id: Long = 0,
   val paymentId: Long,
-  val invoiceId: Long,
+  val partyType: PartyType = PartyType.CUSTOMER,
+  val partyId: Long = 0L,
+  val allocationType: PaymentAllocationType = PaymentAllocationType.INVOICE,
+  val invoiceId: Long? = null,
   val allocatedAmountPaise: Long,
   val allocatedAt: Long = System.currentTimeMillis(),
+  val notes: String = "",
   val isReversed: Boolean = false
 )
 

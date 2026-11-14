@@ -156,15 +156,37 @@ fun DashboardScreen(
           horizontalArrangement = Arrangement.SpaceBetween
         ) {
           Column(modifier = Modifier.weight(1f)) {
-            Text(text = "Catalog stock", style = MaterialTheme.typography.labelSmall, color = FigmaMuted)
-            Text(text = "${state.productCount} Products", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = FigmaInk)
-            Text(text = "Piece, Box, Carton units", style = MaterialTheme.typography.labelSmall, color = FigmaMuted)
+            Text(text = "Sellable stock value", style = MaterialTheme.typography.labelSmall, color = FigmaMuted)
+            Text(
+              text = SubledgerCalculationEngine.formatPaise(state.sellableStockValuePaise),
+              style = MaterialTheme.typography.titleMedium,
+              fontWeight = FontWeight.Bold,
+              color = FigmaInk
+            )
+            Text(
+              text = if (state.expiredStockValuePaise > 0L) {
+                "Expired: ${SubledgerCalculationEngine.formatPaise(state.expiredStockValuePaise)}"
+              } else {
+                "${state.productCount} active products"
+              },
+              style = MaterialTheme.typography.labelSmall,
+              color = if (state.expiredStockValuePaise > 0L) FigmaRed else FigmaMuted
+            )
           }
 
           Column(modifier = Modifier.weight(1f)) {
-            Text(text = "Production suppliers", style = MaterialTheme.typography.labelSmall, color = FigmaMuted)
-            Text(text = "${state.supplierCount} Suppliers", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = FigmaInk)
-            Text(text = "At purchase cost", style = MaterialTheme.typography.labelSmall, color = FigmaMuted)
+            Text(text = "Low stock alerts", style = MaterialTheme.typography.labelSmall, color = FigmaMuted)
+            Text(
+              text = "${state.lowStockCount} Low Stock",
+              style = MaterialTheme.typography.titleMedium,
+              fontWeight = FontWeight.Bold,
+              color = if (state.lowStockCount > 0) FigmaAmber else FigmaTeal
+            )
+            Text(
+              text = "${state.supplierCount} suppliers",
+              style = MaterialTheme.typography.labelSmall,
+              color = FigmaMuted
+            )
           }
         }
       }
@@ -209,7 +231,15 @@ fun DashboardScreen(
         ) {
           Column {
             Text(text = "Customer outstanding", style = MaterialTheme.typography.bodyMedium, color = FigmaMuted)
-            Text(text = "${state.customerCount} retail shops", style = MaterialTheme.typography.labelSmall, color = FigmaMuted)
+            Text(
+              text = if (state.totalCustomerAdvancesPaise > 0L) {
+                "${state.customerCount} shops · Adv credit: ${SubledgerCalculationEngine.formatPaise(state.totalCustomerAdvancesPaise)}"
+              } else {
+                "${state.customerCount} retail shops"
+              },
+              style = MaterialTheme.typography.labelSmall,
+              color = if (state.totalCustomerAdvancesPaise > 0L) FigmaTeal else FigmaMuted
+            )
           }
           CurrencyText(
             paise = state.totalReceivablesPaise,
@@ -230,7 +260,15 @@ fun DashboardScreen(
         ) {
           Column {
             Text(text = "Supplier payables", style = MaterialTheme.typography.bodyMedium, color = FigmaMuted)
-            Text(text = "${state.supplierCount} production units", style = MaterialTheme.typography.labelSmall, color = FigmaMuted)
+            Text(
+              text = if (state.totalSupplierAdvancesPaise > 0L) {
+                "${state.supplierCount} units · Adv paid: ${SubledgerCalculationEngine.formatPaise(state.totalSupplierAdvancesPaise)}"
+              } else {
+                "${state.supplierCount} production units"
+              },
+              style = MaterialTheme.typography.labelSmall,
+              color = if (state.totalSupplierAdvancesPaise > 0L) FigmaTeal else FigmaMuted
+            )
           }
           CurrencyText(
             paise = state.totalPayablesPaise,

@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -14,8 +15,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
@@ -35,6 +38,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,7 +48,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -78,9 +85,12 @@ fun CustomerListScreen(
   val allProducts by viewModel.allProducts.collectAsState()
 
   var showDialog by remember { mutableStateOf(false) }
+  val snackbarHostState = remember { SnackbarHostState() }
+  val scope = rememberCoroutineScope()
 
   Scaffold(
     containerColor = FigmaBackground,
+    snackbarHost = { SnackbarHost(snackbarHostState) },
     floatingActionButton = {
       FloatingActionButton(
         onClick = {
@@ -155,7 +165,8 @@ fun CustomerListScreen(
                 viewModel.openEditDialog(item.customer)
                 showDialog = true
               },
-              onDelete = { viewModel.deleteCustomer(item.customer.id) }
+              onDelete = { viewModel.deleteCustomer(item.customer.id) },
+              onDialError = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } }
             )
           }
         }
@@ -183,7 +194,8 @@ fun CustomerListScreen(
 fun CustomerCard(
   item: CustomerWithBalance,
   onEdit: () -> Unit,
-  onDelete: () -> Unit
+  onDelete: () -> Unit,
+  onDialError: (String) -> Unit = {}
 ) {
   val context = LocalContext.current
   val customer = item.customer
@@ -231,8 +243,12 @@ fun CustomerCard(
           if (customer.phoneNumber.isNotBlank()) {
             IconButton(
               onClick = {
-                val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${customer.phoneNumber}"))
-                context.startActivity(intent)
+                try {
+                  val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${customer.phoneNumber}"))
+                  context.startActivity(intent)
+                } catch (_: ActivityNotFoundException) {
+                  onDialError("No phone dialer app available on this device.")
+                }
               }
             ) {
               Icon(Icons.Default.Call, contentDescription = "Call", tint = FigmaTeal)
@@ -269,17 +285,35 @@ fun CustomerCard(
         }
 
         Column(horizontalAlignment = Alignment.End) {
+          val isNetAdvance = item.outstandingReceivablePaise < 0L
           Text(
-            text = "Outstanding Receivable",
+            text = if (isNetAdvance) "Advance Credit" else "Outstanding Receivable",
             style = MaterialTheme.typography.labelSmall,
             color = FigmaMuted
           )
-          CurrencyText(
-            paise = item.outstandingReceivablePaise,
-            isReceivable = true,
-            fontSize = 16,
-            fontWeight = FontWeight.Bold
-          )
+          if (isNetAdvance) {
+            Text(
+              text = SubledgerCalculationEngine.formatPaise(kotlin.math.abs(item.outstandingReceivablePaise)),
+              fontSize = 16.sp,
+              fontWeight = FontWeight.Bold,
+              color = FigmaTeal
+            )
+          } else {
+            CurrencyText(
+              paise = item.outstandingReceivablePaise,
+              isReceivable = true,
+              fontSize = 16,
+              fontWeight = FontWeight.Bold
+            )
+            if (item.availableAdvancePaise > 0L) {
+              Text(
+                text = "Adv: ${SubledgerCalculationEngine.formatPaise(item.availableAdvancePaise)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = FigmaTeal,
+                fontWeight = FontWeight.Medium
+              )
+            }
+          }
         }
       }
     }
@@ -307,7 +341,9 @@ fun AddEditCustomerDialog(
     text = {
       Column(
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState())
       ) {
         if (formState.errorMessage != null) {
           Surface(
@@ -375,6 +411,42 @@ fun AddEditCustomerDialog(
           )
         }
 
+        OutlinedTextField(
+          value = formState.paymentTermsDays,
+          onValueChange = { onUpdateForm { s -> s.copy(paymentTermsDays = it) } },
+          label = { Text("Payment Terms (Days)") },
+          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+          modifier = Modifier.fillMaxWidth()
+        )
+
+        if (allProducts.isNotEmpty()) {
+          Spacer(modifier = Modifier.height(4.dp))
+          Text(
+            text = "Shop-Specific Product Prices (Optional)",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = FigmaInk
+          )
+          Text(
+            text = "Leave blank to use the product's default selling price.",
+            style = MaterialTheme.typography.labelSmall,
+            color = FigmaMuted
+          )
+          allProducts.forEach { prod ->
+            val defaultStr = SubledgerCalculationEngine.formatPaiseForInput(prod.defaultSellingPricePaise)
+            OutlinedTextField(
+              value = formState.customPrices[prod.id] ?: "",
+              onValueChange = { onSetCustomPrice(prod.id, it) },
+              label = { Text("${prod.name} (Default ₹$defaultStr)") },
+              keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+              singleLine = true,
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("custom_price_input_${prod.id}")
+            )
+          }
+        }
+
         Surface(
           shape = RoundedCornerShape(8.dp),
           color = FigmaSoftTeal,
@@ -394,10 +466,17 @@ fun AddEditCustomerDialog(
     confirmButton = {
       Button(
         onClick = onSave,
+        enabled = !formState.isSaving && !formState.isLoadingDetails,
         colors = ButtonDefaults.buttonColors(containerColor = FigmaTeal, contentColor = FigmaWhite),
         modifier = Modifier.testTag("save_customer_btn")
       ) {
-        Text("Save Shop")
+        Text(
+          when {
+            formState.isSaving -> "Saving..."
+            formState.isLoadingDetails -> "Loading..."
+            else -> "Save Shop"
+          }
+        )
       }
     },
     dismissButton = {

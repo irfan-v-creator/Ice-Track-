@@ -1,5 +1,6 @@
 package com.example.domain.engine
 
+import com.example.domain.model.Product
 import com.example.domain.model.ProductBatch
 
 data class BatchAllocation(
@@ -12,6 +13,16 @@ data class FefoIssueResult(
   val fulfilledPieces: Int,
   val remainingUnfulfilledPieces: Int
 )
+
+data class InventoryValuationSummary(
+  val sellablePieces: Int,
+  val expiredPieces: Int,
+  val sellableValuePaise: Long,
+  val expiredValuePaise: Long
+) {
+  val totalPieces: Int get() = sellablePieces + expiredPieces
+  val totalValuePaise: Long get() = sellableValuePaise + expiredValuePaise
+}
 
 object FefoInventoryEngine {
 
@@ -71,6 +82,52 @@ object FefoInventoryEngine {
       .filter { it.isActive && it.currentQuantityPieces > 0 }
       .filter { allowExpired || it.expiryDate > currentTimestamp }
       .sumOf { it.currentQuantityPieces }
+  }
+
+  /**
+   * Single Source of Truth inventory valuation separating sellable stock from expired stock.
+   */
+  fun calculateInventoryValuation(
+    batches: List<ProductBatch>,
+    currentTimestamp: Long = System.currentTimeMillis()
+  ): InventoryValuationSummary {
+    val activeStocked = batches.filter { it.isActive && it.currentQuantityPieces > 0 }
+    val sellable = activeStocked.filter { it.expiryDate > currentTimestamp }
+    val expired = activeStocked.filter { it.expiryDate <= currentTimestamp }
+
+    return InventoryValuationSummary(
+      sellablePieces = sellable.sumOf { it.currentQuantityPieces },
+      expiredPieces = expired.sumOf { it.currentQuantityPieces },
+      sellableValuePaise = sellable.sumOf { it.currentQuantityPieces.toLong() * it.purchaseCostPerPiecePaise },
+      expiredValuePaise = expired.sumOf { it.currentQuantityPieces.toLong() * it.purchaseCostPerPiecePaise }
+    )
+  }
+
+  /**
+   * Single Source of Truth low-stock check: compares active sellable stock against configured minimum threshold.
+   */
+  fun isProductLowStock(
+    product: Product,
+    productBatches: List<ProductBatch>,
+    currentTimestamp: Long = System.currentTimeMillis()
+  ): Boolean {
+    if (!product.isActive || product.minStockLevelPieces <= 0) return false
+    val sellablePieces = calculateAvailableStock(productBatches, allowExpired = false, currentTimestamp = currentTimestamp)
+    return sellablePieces <= product.minStockLevelPieces
+  }
+
+  /**
+   * Single Source of Truth low-stock product count across catalog and batches.
+   */
+  fun computeLowStockCount(
+    products: List<Product>,
+    allBatches: List<ProductBatch>,
+    currentTimestamp: Long = System.currentTimeMillis()
+  ): Int {
+    val byProduct = allBatches.groupBy { it.productId }
+    return products.count { product ->
+      isProductLowStock(product, byProduct[product.id].orEmpty(), currentTimestamp)
+    }
   }
 
   /**

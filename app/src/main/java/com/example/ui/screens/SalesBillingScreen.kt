@@ -33,11 +33,14 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import kotlinx.coroutines.launch
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
@@ -60,6 +63,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.domain.engine.CreditLimitAssessment
+import com.example.domain.engine.PaymentAllocationEngine
 import com.example.domain.engine.SubledgerCalculationEngine
 import com.example.domain.model.Customer
 import com.example.domain.model.PaymentMethod
@@ -80,6 +85,20 @@ import com.example.ui.theme.FigmaWhite
 import com.example.ui.viewmodel.SalesItemDraft
 import com.example.ui.viewmodel.SalesViewModel
 
+private data class PendingSaleCreditOverride(
+  val customerId: Long,
+  val invoiceNumber: String,
+  val invoiceDate: Long,
+  val dueDate: Long,
+  val items: List<SalesItemDraft>,
+  val paidAmountPaise: Long,
+  val paymentMethod: PaymentMethod?,
+  val notes: String,
+  val allowExpired: Boolean,
+  val applyAvailableAdvance: Boolean,
+  val assessment: CreditLimitAssessment
+)
+
 @Composable
 fun SalesBillingScreen(
   viewModel: SalesViewModel,
@@ -88,8 +107,12 @@ fun SalesBillingScreen(
   val salesInvoices by viewModel.salesInvoices.collectAsState()
   val customers by viewModel.customers.collectAsState()
   val products by viewModel.products.collectAsState()
+  val customerBalances by viewModel.customerBalances.collectAsState()
+  val customerAdvances by viewModel.customerAdvances.collectAsState()
+  val isSubmitting by viewModel.isSubmitting.collectAsState()
 
   var showNewSaleDialog by remember { mutableStateOf(false) }
+  var pendingCreditOverride by remember { mutableStateOf<PendingSaleCreditOverride?>(null) }
   var showCustomerPaymentDialog by remember { mutableStateOf<Customer?>(null) }
   var selectedInvoiceDetail by remember { mutableStateOf<SalesInvoice?>(null) }
   val snackbarHostState = remember { SnackbarHostState() }
@@ -205,11 +228,15 @@ fun SalesBillingScreen(
     CreateSalesInvoiceDialog(
       customers = customers,
       products = products,
+      customerBalances = customerBalances,
+      customerAdvances = customerAdvances,
+      isSubmitting = isSubmitting,
+      onGenerateInvoiceNumber = { viewModel.generateNextInvoiceNumber() },
       onGetPrice = { custId, prodId, defPrice ->
         viewModel.getSellingPriceForShop(custId, prodId, defPrice)
       },
       onDismiss = { showNewSaleDialog = false },
-      onSubmit = { customerId, invNum, invDate, dueDate, items, paidAmount, method, notes, allowExpired, onError ->
+      onSubmit = { customerId, invNum, invDate, dueDate, items, paidAmount, method, notes, allowExpired, applyAdvance, onError ->
         viewModel.createSalesInvoice(
           customerId = customerId,
           invoiceNumber = invNum,
@@ -220,9 +247,84 @@ fun SalesBillingScreen(
           paymentMethod = method,
           notes = notes,
           allowExpired = allowExpired,
+          applyAvailableAdvance = applyAdvance,
+          allowCreditLimitOverride = false,
+          onCreditLimitExceeded = { assessment ->
+            pendingCreditOverride = PendingSaleCreditOverride(
+              customerId = customerId,
+              invoiceNumber = invNum,
+              invoiceDate = invDate,
+              dueDate = dueDate,
+              items = items,
+              paidAmountPaise = paidAmount,
+              paymentMethod = method,
+              notes = notes,
+              allowExpired = allowExpired,
+              applyAvailableAdvance = applyAdvance,
+              assessment = assessment
+            )
+          },
           onSuccess = { showNewSaleDialog = false },
           onError = onError
         )
+      }
+    )
+  }
+
+  pendingCreditOverride?.let { pending ->
+    val custName = customers.find { it.id == pending.customerId }?.shopName ?: "Customer #${pending.customerId}"
+    AlertDialog(
+      onDismissRequest = { pendingCreditOverride = null },
+      title = { Text("Customer Credit Limit Exceeded", fontWeight = FontWeight.Bold, color = FigmaRed) },
+      text = {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          Text("Shop: $custName", fontWeight = FontWeight.SemiBold, color = FigmaInk)
+          Text("Credit Limit: ${SubledgerCalculationEngine.formatPaise(pending.assessment.creditLimitPaise)}", fontSize = 13.sp, color = FigmaInk)
+          Text("Current Balance: ${SubledgerCalculationEngine.formatPaise(pending.assessment.currentBalancePaise)}", fontSize = 13.sp, color = FigmaMuted)
+          Text("Projected Balance: ${SubledgerCalculationEngine.formatPaise(pending.assessment.projectedBalancePaise)}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = FigmaRed)
+          Text(
+            "Exceeded by ${SubledgerCalculationEngine.formatPaise(pending.assessment.exceededByPaise)}. Override credit limit and issue bill anyway?",
+            fontSize = 12.sp,
+            color = FigmaMuted
+          )
+        }
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            viewModel.createSalesInvoice(
+              customerId = pending.customerId,
+              invoiceNumber = pending.invoiceNumber,
+              invoiceDate = pending.invoiceDate,
+              dueDate = pending.dueDate,
+              items = pending.items,
+              paidAmountPaise = pending.paidAmountPaise,
+              paymentMethod = pending.paymentMethod,
+              notes = pending.notes,
+              allowExpired = pending.allowExpired,
+              applyAvailableAdvance = pending.applyAvailableAdvance,
+              allowCreditLimitOverride = true,
+              onSuccess = {
+                pendingCreditOverride = null
+                showNewSaleDialog = false
+              },
+              onError = { err ->
+                pendingCreditOverride = null
+                scope.launch { snackbarHostState.showSnackbar(err) }
+              }
+            )
+          },
+          enabled = !isSubmitting,
+          colors = ButtonDefaults.buttonColors(containerColor = FigmaRed, contentColor = FigmaWhite),
+          modifier = Modifier.testTag("confirm_sale_credit_override_btn")
+        ) {
+          Text("Override & Issue Bill")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { pendingCreditOverride = null }) {
+          Text("Cancel", color = FigmaMuted)
+        }
       }
     )
   }
@@ -232,7 +334,22 @@ fun SalesBillingScreen(
     ReceiveCustomerPaymentDialog(
       customer = currentCustomer,
       allCustomers = customers,
+      customerBalances = customerBalances,
+      customerAdvances = customerAdvances,
+      isSubmitting = isSubmitting,
       onDismiss = { showCustomerPaymentDialog = null },
+      onApplyAdvance = { custId, onError ->
+        viewModel.applyCustomerAdvance(
+          customerId = custId,
+          onSuccess = { applied ->
+            showCustomerPaymentDialog = null
+            scope.launch {
+              snackbarHostState.showSnackbar("Applied advance of ${SubledgerCalculationEngine.formatPaise(applied)} to unpaid bills.")
+            }
+          },
+          onError = onError
+        )
+      },
       onSubmit = { custId, amount, date, method, notes, onError ->
         viewModel.recordCustomerPayment(
           customerId = custId,
@@ -349,17 +466,28 @@ fun SalesInvoiceCard(
 fun CreateSalesInvoiceDialog(
   customers: List<Customer>,
   products: List<Product>,
+  customerBalances: Map<Long, Long> = emptyMap(),
+  customerAdvances: Map<Long, Long> = emptyMap(),
+  isSubmitting: Boolean = false,
+  onGenerateInvoiceNumber: suspend () -> String = { "INV-${System.currentTimeMillis() % 100000}" },
   onGetPrice: suspend (Long, Long, Long) -> Long,
   onDismiss: () -> Unit,
-  onSubmit: (Long, String, Long, Long, List<SalesItemDraft>, Long, PaymentMethod?, String, Boolean, (String) -> Unit) -> Unit
+  onSubmit: (Long, String, Long, Long, List<SalesItemDraft>, Long, PaymentMethod?, String, Boolean, Boolean, (String) -> Unit) -> Unit
 ) {
   val coroutineScope = androidx.compose.runtime.rememberCoroutineScope()
   var selectedCustomerId by remember { mutableStateOf(customers.firstOrNull()?.id ?: 0L) }
-  var invoiceNumber by remember { mutableStateOf("INV-${System.currentTimeMillis() % 100000}") }
+  var invoiceNumber by remember { mutableStateOf("") }
   var notes by remember { mutableStateOf("") }
   var paidAmountRupees by remember { mutableStateOf("0") }
   var paymentMethod by remember { mutableStateOf(PaymentMethod.CASH) }
+  var applyAvailableAdvance by remember { mutableStateOf(true) }
   var errorMessage by remember { mutableStateOf<String?>(null) }
+
+  androidx.compose.runtime.LaunchedEffect(Unit) {
+    if (invoiceNumber.isBlank()) {
+      invoiceNumber = onGenerateInvoiceNumber()
+    }
+  }
 
   val items = remember { mutableStateListOf<SalesItemDraft>() }
 
@@ -372,7 +500,7 @@ fun CreateSalesInvoiceDialog(
     val prod = products.find { it.id == prodId } ?: return
     coroutineScope.launch {
       val pricePaise = onGetPrice(custId, prodId, prod.defaultSellingPricePaise)
-      priceInput = (pricePaise.toDouble() / 100.0).toString()
+      priceInput = SubledgerCalculationEngine.formatPaiseForInput(pricePaise)
     }
   }
 
@@ -383,6 +511,9 @@ fun CreateSalesInvoiceDialog(
     }
   }
 
+  val selectedCustomer = customers.find { it.id == selectedCustomerId }
+  val selectedBalancePaise = customerBalances[selectedCustomerId] ?: 0L
+  val selectedAdvancePaise = customerAdvances[selectedCustomerId] ?: 0L
   val totalAmountPaise = items.sumOf { it.lineTotalPaise }
 
   AlertDialog(
@@ -417,6 +548,32 @@ fun CreateSalesInvoiceDialog(
               color = FigmaInk,
               fontSize = 13.sp
             )
+          }
+        }
+
+        selectedCustomer?.let { cust ->
+          Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = FigmaSoftTeal,
+            modifier = Modifier
+              .fillMaxWidth()
+              .border(1.dp, FigmaLine, RoundedCornerShape(8.dp))
+          ) {
+            Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+              val termsText = "Terms: ${cust.paymentTermsDays} days"
+              val limitText = if (cust.creditLimitPaise > 0L) {
+                "Limit: ${SubledgerCalculationEngine.formatPaise(cust.creditLimitPaise)}"
+              } else {
+                "Limit: Unlimited"
+              }
+              Text(text = "$termsText · $limitText", fontSize = 11.sp, color = FigmaNavy, fontWeight = FontWeight.SemiBold)
+              Text(
+                text = "Current Due: ${SubledgerCalculationEngine.formatPaise(selectedBalancePaise)}" +
+                  if (selectedAdvancePaise > 0L) " · Advance Credit: ${SubledgerCalculationEngine.formatPaise(selectedAdvancePaise)}" else "",
+                fontSize = 11.sp,
+                color = FigmaInk
+              )
+            }
           }
         }
 
@@ -472,11 +629,11 @@ fun CreateSalesInvoiceDialog(
         Button(
           onClick = {
             val prod = products.find { it.id == selectedProductId }
-            val qty = quantityInput.toIntOrNull()
-            val pricePaise = SubledgerCalculationEngine.parseRupeesToPaise(priceInput)
+            val qty = quantityInput.trim().toIntOrNull()
+            val pricePaise = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(priceInput)
 
-            if (prod == null || qty == null || qty <= 0 || pricePaise <= 0) {
-              errorMessage = "Please enter valid product, quantity, and price."
+            if (prod == null || qty == null || qty <= 0 || pricePaise == null || pricePaise <= 0L) {
+              errorMessage = "Please enter valid product, positive quantity, and price."
               return@Button
             }
 
@@ -522,7 +679,7 @@ fun CreateSalesInvoiceDialog(
                   overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                  text = "${item.quantityPieces} pcs @ ₹${item.unitPricePaise / 100.0} = ₹${item.lineTotalPaise / 100.0}",
+                  text = "${item.quantityPieces} pcs @ ${SubledgerCalculationEngine.formatPaise(item.unitPricePaise)} = ${SubledgerCalculationEngine.formatPaise(item.lineTotalPaise)}",
                   fontSize = 10.sp,
                   color = FigmaMuted,
                   maxLines = 1,
@@ -549,6 +706,41 @@ fun CreateSalesInvoiceDialog(
             modifier = Modifier.fillMaxWidth()
           )
 
+          if (selectedAdvancePaise > 0L) {
+            val applicableAdv = kotlin.math.min(selectedAdvancePaise, totalAmountPaise)
+            Row(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clickable { applyAvailableAdvance = !applyAvailableAdvance },
+              verticalAlignment = Alignment.CenterVertically
+            ) {
+              Checkbox(
+                checked = applyAvailableAdvance,
+                onCheckedChange = { applyAvailableAdvance = it },
+                colors = CheckboxDefaults.colors(checkedColor = FigmaTeal)
+              )
+              Text(
+                text = "Apply available advance (${SubledgerCalculationEngine.formatPaise(applicableAdv)})",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = FigmaTeal
+              )
+            }
+          }
+
+          val advAppliedPreview = if (applyAvailableAdvance) kotlin.math.min(selectedAdvancePaise, totalAmountPaise) else 0L
+          val netAfterAdvancePreview = (totalAmountPaise - advAppliedPreview).coerceAtLeast(0L)
+          val parsedCashPaise = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(paidAmountRupees, allowNegative = false, allowEmptyAsZero = true) ?: 0L
+          if (parsedCashPaise > netAfterAdvancePreview && totalAmountPaise > 0L) {
+            val excessAdv = parsedCashPaise - netAfterAdvancePreview
+            Text(
+              text = "Excess payment of ${SubledgerCalculationEngine.formatPaise(excessAdv)} will be saved as Customer Advance.",
+              fontSize = 11.sp,
+              color = FigmaTeal,
+              fontWeight = FontWeight.Medium
+            )
+          }
+
           Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             PaymentMethod.values().take(3).forEach { method ->
               Surface(
@@ -569,39 +761,68 @@ fun CreateSalesInvoiceDialog(
           }
         }
 
-        errorMessage?.let {
-          Text(text = it, color = FigmaRed, fontSize = 12.sp)
+        errorMessage?.let { err ->
+          Surface(
+            color = FigmaRed.copy(alpha = 0.08f),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .border(1.dp, FigmaRed.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+              .testTag("sales_dialog_error")
+          ) {
+            Text(text = err, color = FigmaRed, fontSize = 12.sp, modifier = Modifier.padding(8.dp))
+          }
         }
       }
     },
     confirmButton = {
       Button(
         onClick = {
+          if (selectedCustomerId == 0L) {
+            errorMessage = "Please select a retail shop"
+            return@Button
+          }
+          if (invoiceNumber.isBlank()) {
+            errorMessage = "Invoice number cannot be empty"
+            return@Button
+          }
           if (items.isEmpty()) {
             errorMessage = "Please add at least one line item"
             return@Button
           }
-          val paidPaise = SubledgerCalculationEngine.parseRupeesToPaise(paidAmountRupees)
+          val paidPaise = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(
+            paidAmountRupees,
+            allowNegative = false,
+            allowEmptyAsZero = true
+          )
+          if (paidPaise == null) {
+            errorMessage = "Please enter a valid payment received amount"
+            return@Button
+          }
           val now = System.currentTimeMillis()
-          val dueDate = now + (7 * 86400000L) // Default 7 days credit
+          val termsDays = selectedCustomer?.paymentTermsDays ?: 7
+          val dueDate = PaymentAllocationEngine.calculateDueDate(now, termsDays)
 
+          errorMessage = null
           onSubmit(
             selectedCustomerId,
-            invoiceNumber,
+            invoiceNumber.trim(),
             now,
             dueDate,
             items.toList(),
             paidPaise,
             if (paidPaise > 0) paymentMethod else null,
             notes,
-            false // allowExpired = false strictly enforces FEFO non-expired stock
+            false, // allowExpired = false strictly enforces FEFO non-expired stock
+            applyAvailableAdvance
           ) { err ->
             errorMessage = err
           }
         },
+        enabled = !isSubmitting,
         colors = ButtonDefaults.buttonColors(containerColor = FigmaTeal, contentColor = FigmaWhite)
       ) {
-        Text("Generate Bill & Dispatch")
+        Text(if (isSubmitting) "Generating..." else "Generate Bill & Dispatch")
       }
     },
     dismissButton = {
@@ -616,7 +837,11 @@ fun CreateSalesInvoiceDialog(
 fun ReceiveCustomerPaymentDialog(
   customer: Customer,
   allCustomers: List<Customer>,
+  customerBalances: Map<Long, Long> = emptyMap(),
+  customerAdvances: Map<Long, Long> = emptyMap(),
+  isSubmitting: Boolean = false,
   onDismiss: () -> Unit,
+  onApplyAdvance: (Long, (String) -> Unit) -> Unit = { _, _ -> },
   onSubmit: (Long, Long, Long, PaymentMethod, String, (String) -> Unit) -> Unit
 ) {
   var selectedCustId by remember { mutableStateOf(customer.id) }
@@ -625,12 +850,87 @@ fun ReceiveCustomerPaymentDialog(
   var notes by remember { mutableStateOf("") }
   var errorText by remember { mutableStateOf<String?>(null) }
 
+  val currentCust = allCustomers.find { it.id == selectedCustId } ?: customer
+  val currentDue = customerBalances[selectedCustId] ?: 0L
+  val currentAdvance = customerAdvances[selectedCustId] ?: 0L
+
   AlertDialog(
     onDismissRequest = onDismiss,
     title = { Text("Receive Customer Payment", fontWeight = FontWeight.Bold, color = FigmaInk) },
     text = {
-      Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(text = "Customer: ${customer.shopName} (${customer.ownerName})", fontWeight = FontWeight.SemiBold, color = FigmaInk)
+      Column(
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState())
+      ) {
+        Text(text = "Select Customer:", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = FigmaInk)
+        allCustomers.forEach { cust ->
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clickable { selectedCustId = cust.id }
+              .background(if (selectedCustId == cust.id) FigmaSoftTeal else FigmaWhite, RoundedCornerShape(6.dp))
+              .padding(8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Text(
+              text = cust.shopName,
+              fontWeight = if (selectedCustId == cust.id) FontWeight.Bold else FontWeight.Normal,
+              fontSize = 13.sp,
+              color = FigmaInk
+            )
+            val bal = customerBalances[cust.id] ?: 0L
+            Text(
+              text = if (bal < 0L) "Adv ${SubledgerCalculationEngine.formatPaise(kotlin.math.abs(bal))}" else SubledgerCalculationEngine.formatPaise(bal),
+              fontSize = 12.sp,
+              fontWeight = FontWeight.SemiBold,
+              color = if (bal > 0L) FigmaRed else FigmaTeal
+            )
+          }
+        }
+
+        Surface(
+          shape = RoundedCornerShape(8.dp),
+          color = FigmaSoftTeal,
+          modifier = Modifier
+            .fillMaxWidth()
+            .border(1.dp, FigmaLine, RoundedCornerShape(8.dp))
+        ) {
+          Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+              text = "${currentCust.shopName} · Net Due: ${SubledgerCalculationEngine.formatPaise(currentDue.coerceAtLeast(0L))}",
+              fontSize = 12.sp,
+              fontWeight = FontWeight.SemiBold,
+              color = FigmaInk
+            )
+            if (currentAdvance > 0L) {
+              Text(
+                text = "Available Advance: ${SubledgerCalculationEngine.formatPaise(currentAdvance)}",
+                fontSize = 11.sp,
+                color = FigmaTeal,
+                fontWeight = FontWeight.Bold
+              )
+            }
+          }
+        }
+
+        if (currentAdvance > 0L && currentDue > 0L) {
+          OutlinedButton(
+            onClick = { onApplyAdvance(selectedCustId) { errorText = it } },
+            enabled = !isSubmitting,
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Text(
+              text = "Apply Existing Advance (${SubledgerCalculationEngine.formatPaise(currentAdvance)})",
+              fontSize = 12.sp,
+              color = FigmaTeal,
+              fontWeight = FontWeight.SemiBold
+            )
+          }
+        }
 
         OutlinedTextField(
           value = amountInput,
@@ -638,6 +938,17 @@ fun ReceiveCustomerPaymentDialog(
           label = { Text("Amount Received (₹)") },
           modifier = Modifier.fillMaxWidth()
         )
+
+        val parsedAmt = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(amountInput, allowNegative = false, allowEmptyAsZero = true) ?: 0L
+        if (parsedAmt > currentDue.coerceAtLeast(0L) && parsedAmt > 0L) {
+          val excess = parsedAmt - currentDue.coerceAtLeast(0L)
+          Text(
+            text = "Excess ${SubledgerCalculationEngine.formatPaise(excess)} above dues will be recorded as Customer Advance.",
+            fontSize = 11.sp,
+            color = FigmaTeal,
+            fontWeight = FontWeight.Medium
+          )
+        }
 
         Text(text = "Payment Method:", fontSize = 12.sp, color = FigmaMuted)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -667,24 +978,36 @@ fun ReceiveCustomerPaymentDialog(
           modifier = Modifier.fillMaxWidth()
         )
 
-        errorText?.let { Text(text = it, color = FigmaRed, fontSize = 12.sp) }
+        errorText?.let { err ->
+          Surface(
+            color = FigmaRed.copy(alpha = 0.08f),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .border(1.dp, FigmaRed.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+          ) {
+            Text(text = err, color = FigmaRed, fontSize = 12.sp, modifier = Modifier.padding(8.dp))
+          }
+        }
       }
     },
     confirmButton = {
       Button(
         onClick = {
-          val paise = SubledgerCalculationEngine.parseRupeesToPaise(amountInput)
-          if (paise <= 0) {
-            errorText = "Please enter a valid received amount"
+          val paise = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(amountInput)
+          if (paise == null || paise <= 0L) {
+            errorText = "Please enter a valid positive received amount"
             return@Button
           }
+          errorText = null
           onSubmit(selectedCustId, paise, System.currentTimeMillis(), selectedMethod, notes) { err ->
             errorText = err
           }
         },
+        enabled = !isSubmitting,
         colors = ButtonDefaults.buttonColors(containerColor = FigmaTeal, contentColor = FigmaWhite)
       ) {
-        Text("Record Payment")
+        Text(if (isSubmitting) "Saving..." else "Record Payment")
       }
     },
     dismissButton = {

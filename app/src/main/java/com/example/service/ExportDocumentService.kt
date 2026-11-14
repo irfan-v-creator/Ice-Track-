@@ -9,6 +9,7 @@ import android.net.Uri
 import androidx.core.content.FileProvider
 import com.example.domain.engine.AccountStatementReport
 import com.example.domain.engine.BusinessReportEngine
+import com.example.domain.engine.FefoInventoryEngine
 import com.example.domain.engine.ProductSalesPerformance
 import com.example.domain.engine.ProfitLossSummary
 import com.example.domain.engine.ShopSalesPerformance
@@ -1227,7 +1228,11 @@ object ExportDocumentService {
     val sb = StringBuilder()
     sb.append("IceTrack - Inventory Valuation & FEFO Stock Status\n\n")
     val productMap = products.associateBy { it.id }
+    val now = System.currentTimeMillis()
     val sortedBatches = batches.sortedWith(compareBy<ProductBatch> { it.expiryDate }.thenBy { it.purchaseDate })
+    val valuation = FefoInventoryEngine.calculateInventoryValuation(sortedBatches, now)
+    sb.append("Sellable Stock Value (INR),${csvCell(SubledgerCalculationEngine.formatPaise(valuation.sellableValuePaise, false))},Sellable Pieces,${valuation.sellablePieces}\n")
+    sb.append("Expired Stock Value (INR),${csvCell(SubledgerCalculationEngine.formatPaise(valuation.expiredValuePaise, false))},Expired Pieces,${valuation.expiredPieces}\n\n")
     sb.append("Product Name,SKU,Category,Batch Number,Current Stock (Pcs),Cost/Pc (INR),Total Valuation (INR),Expiry Date,Status\n")
 
     var totalPieces = 0L
@@ -1235,8 +1240,8 @@ object ExportDocumentService {
     for (b in sortedBatches) {
       val prod = productMap[b.productId]
       val status = when {
-        b.isExpired -> "EXPIRED"
-        b.expiryDate <= System.currentTimeMillis() + (7 * 86400000L) -> "EXPIRING_SOON"
+        b.expiryDate <= now -> "EXPIRED"
+        b.expiryDate <= now + (7 * 86400000L) -> "EXPIRING_SOON"
         else -> "GOOD"
       }
       val valuationPaise = b.currentQuantityPieces.toLong() * b.purchaseCostPerPiecePaise
@@ -1247,7 +1252,7 @@ object ExportDocumentService {
       val exp = SubledgerCalculationEngine.formatDate(b.expiryDate)
       sb.append("${csvCell(prod?.name ?: "Unknown")},${csvCell(prod?.sku ?: "")},${csvCell(prod?.category ?: "")},${csvCell(b.batchNumber)},${b.currentQuantityPieces},${csvCell(cost)},${csvCell(valStr)},${csvCell(exp)},$status\n")
     }
-    sb.append("\nTOTAL,,,,$totalPieces,,${csvCell(SubledgerCalculationEngine.formatPaise(totalValuation, false))},,\n")
+    sb.append("\nTOTAL (ALL BATCHES),,,,$totalPieces,,${csvCell(SubledgerCalculationEngine.formatPaise(totalValuation, false))},,\n")
     return sb.toString()
   }
 
@@ -1270,20 +1275,20 @@ object ExportDocumentService {
     overrideDir: File? = null
   ): File {
     val productMap = products.associateBy { it.id }
+    val now = System.currentTimeMillis()
     val sortedBatches = batches.sortedWith(compareBy<ProductBatch> { it.expiryDate }.thenBy { it.purchaseDate })
-    val totalPieces = sortedBatches.sumOf { it.currentQuantityPieces.toLong() }
-    val totalValue = sortedBatches.sumOf { it.currentQuantityPieces.toLong() * it.purchaseCostPerPiecePaise }
+    val invValuation = FefoInventoryEngine.calculateInventoryValuation(sortedBatches, now)
 
     val batchSheet = XlsxSheet(
       name = "FEFO Batches",
       titleBanner = "IceTrack - Inventory Valuation & FEFO Batches",
-      subtitleBanner = "Sorted by Expiry Date (FEFO) | Active Batches: ${sortedBatches.size}",
+      subtitleBanner = "Sorted by Expiry (FEFO) | Sellable: ${invValuation.sellablePieces} pcs | Expired: ${invValuation.expiredPieces} pcs",
       headers = listOf("Product Name", "SKU", "Category", "Batch #", "Stock (Pcs)", "Cost/Pc (INR)", "Valuation (INR)", "Expiry Date", "Status"),
       rows = sortedBatches.map { b ->
         val prod = productMap[b.productId]
         val status = when {
-          b.isExpired -> "EXPIRED"
-          b.expiryDate <= System.currentTimeMillis() + (7 * 86400000L) -> "EXPIRING_SOON"
+          b.expiryDate <= now -> "EXPIRED"
+          b.expiryDate <= now + (7 * 86400000L) -> "EXPIRING_SOON"
           else -> "GOOD"
         }
         val valuation = b.currentQuantityPieces.toLong() * b.purchaseCostPerPiecePaise
@@ -1301,15 +1306,26 @@ object ExportDocumentService {
       },
       footerRows = listOf(
         listOf(
-          XlsxCell.Text("TOTAL STOCK"),
+          XlsxCell.Text("SELLABLE STOCK"),
           XlsxCell.Text(""),
           XlsxCell.Text(""),
-          XlsxCell.WholeNumber(sortedBatches.size.toLong()),
-          XlsxCell.WholeNumber(totalPieces),
+          XlsxCell.WholeNumber(sortedBatches.count { it.expiryDate > now }.toLong()),
+          XlsxCell.WholeNumber(invValuation.sellablePieces.toLong()),
           XlsxCell.Text(""),
-          XlsxCell.Currency(totalValue),
+          XlsxCell.Currency(invValuation.sellableValuePaise),
           XlsxCell.Text(""),
-          XlsxCell.Text("")
+          XlsxCell.Text("GOOD")
+        ),
+        listOf(
+          XlsxCell.Text("EXPIRED STOCK"),
+          XlsxCell.Text(""),
+          XlsxCell.Text(""),
+          XlsxCell.WholeNumber(sortedBatches.count { it.expiryDate <= now }.toLong()),
+          XlsxCell.WholeNumber(invValuation.expiredPieces.toLong()),
+          XlsxCell.Text(""),
+          XlsxCell.Currency(invValuation.expiredValuePaise),
+          XlsxCell.Text(""),
+          XlsxCell.Text("EXPIRED")
         )
       )
     )
@@ -1319,18 +1335,17 @@ object ExportDocumentService {
       name = "Product Stock Summary",
       titleBanner = "IceTrack - Product-level Stock & Reorder Status",
       subtitleBanner = "Products in Catalog: ${products.size}",
-      headers = listOf("Product Name", "SKU", "Total Stock (Pcs)", "Min Reorder Level", "Total Value (INR)", "Alert"),
+      headers = listOf("Product Name", "SKU", "Sellable Stock (Pcs)", "Min Reorder Level", "Sellable Value (INR)", "Alert"),
       rows = products.map { p ->
         val pBatches = batchesByProd[p.id] ?: emptyList()
-        val stockPcs = pBatches.sumOf { it.currentQuantityPieces }
-        val valPaise = pBatches.sumOf { it.currentQuantityPieces.toLong() * it.purchaseCostPerPiecePaise }
-        val alert = if (stockPcs <= p.minStockLevelPieces) "LOW STOCK" else "OK"
+        val prodVal = FefoInventoryEngine.calculateInventoryValuation(pBatches, now)
+        val alert = if (FefoInventoryEngine.isProductLowStock(p, pBatches, now)) "LOW STOCK" else "OK"
         listOf(
           XlsxCell.Text(p.name),
           XlsxCell.Text(p.sku),
-          XlsxCell.WholeNumber(stockPcs.toLong()),
+          XlsxCell.WholeNumber(prodVal.sellablePieces.toLong()),
           XlsxCell.WholeNumber(p.minStockLevelPieces.toLong()),
-          XlsxCell.Currency(valPaise),
+          XlsxCell.Currency(prodVal.sellableValuePaise),
           XlsxCell.Text(alert)
         )
       }
@@ -1351,13 +1366,15 @@ object ExportDocumentService {
     overrideDir: File? = null
   ): File {
     val productMap = products.associateBy { it.id }
+    val now = System.currentTimeMillis()
     val sortedBatches = batches.sortedWith(compareBy<ProductBatch> { it.expiryDate }.thenBy { it.purchaseDate })
+    val invValuation = FefoInventoryEngine.calculateInventoryValuation(sortedBatches, now)
     val headers = listOf("Product", "SKU", "Batch #", "Stock", "Cost/Pc", "Valuation", "Expiry", "Status")
     val rows = sortedBatches.map { b ->
       val prod = productMap[b.productId]
       val status = when {
-        b.isExpired -> "EXPIRED"
-        b.expiryDate <= System.currentTimeMillis() + (7 * 86400000L) -> "EXPIRING"
+        b.expiryDate <= now -> "EXPIRED"
+        b.expiryDate <= now + (7 * 86400000L) -> "EXPIRING"
         else -> "GOOD"
       }
       val totalValuation = b.currentQuantityPieces.toLong() * b.purchaseCostPerPiecePaise
@@ -1372,21 +1389,18 @@ object ExportDocumentService {
         status
       )
     }
-    val totalPieces = sortedBatches.sumOf { it.currentQuantityPieces }
-    val totalValue = sortedBatches.sumOf { it.currentQuantityPieces.toLong() * it.purchaseCostPerPiecePaise }
-    val expiredCount = sortedBatches.count { it.isExpired }
     val cards = listOf(
-      "Stock Value" to SubledgerCalculationEngine.formatPaise(totalValue),
-      "Total Pieces" to "$totalPieces Pcs",
-      "Batches" to "${sortedBatches.size}",
-      "Expired" to "$expiredCount"
+      "Sellable Value" to SubledgerCalculationEngine.formatPaise(invValuation.sellableValuePaise),
+      "Sellable Pcs" to "${invValuation.sellablePieces} Pcs",
+      "Expired Value" to SubledgerCalculationEngine.formatPaise(invValuation.expiredValuePaise),
+      "Expired Pcs" to "${invValuation.expiredPieces} Pcs"
     )
 
     return renderPdfSafely(
       context = context,
       fileName = "IceTrack_InventoryFEFO_${System.currentTimeMillis()}.pdf",
       title = "Inventory Valuation & FEFO Batches",
-      subtitle = "Cold Storage Active Stock Valuation & Expiry Status",
+      subtitle = "Cold Storage Sellable vs Expired Stock Valuation & Expiry Status",
       tableHeaders = headers,
       tableRows = rows,
       summaryCards = cards,

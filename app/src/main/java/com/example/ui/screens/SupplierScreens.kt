@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -14,8 +15,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Business
@@ -35,6 +38,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,7 +48,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -76,9 +83,12 @@ fun SupplierListScreen(
   val formState by viewModel.formState.collectAsState()
 
   var showDialog by remember { mutableStateOf(false) }
+  val snackbarHostState = remember { SnackbarHostState() }
+  val scope = rememberCoroutineScope()
 
   Scaffold(
     containerColor = FigmaBackground,
+    snackbarHost = { SnackbarHost(snackbarHostState) },
     floatingActionButton = {
       FloatingActionButton(
         onClick = {
@@ -153,7 +163,8 @@ fun SupplierListScreen(
                 viewModel.openEditDialog(item.supplier)
                 showDialog = true
               },
-              onDelete = { viewModel.deleteSupplier(item.supplier.id) }
+              onDelete = { viewModel.deleteSupplier(item.supplier.id) },
+              onDialError = { msg -> scope.launch { snackbarHostState.showSnackbar(msg) } }
             )
           }
         }
@@ -179,7 +190,8 @@ fun SupplierListScreen(
 fun SupplierCard(
   item: SupplierWithBalance,
   onEdit: () -> Unit,
-  onDelete: () -> Unit
+  onDelete: () -> Unit,
+  onDialError: (String) -> Unit = {}
 ) {
   val context = LocalContext.current
   val supplier = item.supplier
@@ -227,8 +239,12 @@ fun SupplierCard(
           if (supplier.phoneNumber.isNotBlank()) {
             IconButton(
               onClick = {
-                val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${supplier.phoneNumber}"))
-                context.startActivity(intent)
+                try {
+                  val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${supplier.phoneNumber}"))
+                  context.startActivity(intent)
+                } catch (_: ActivityNotFoundException) {
+                  onDialError("No phone dialer app available on this device.")
+                }
               }
             ) {
               Icon(Icons.Default.Call, contentDescription = "Call", tint = FigmaTeal)
@@ -265,17 +281,35 @@ fun SupplierCard(
         }
 
         Column(horizontalAlignment = Alignment.End) {
+          val isNetAdvance = item.outstandingPayablePaise < 0L
           Text(
-            text = "Outstanding Payable",
+            text = if (isNetAdvance) "Advance Credit Paid" else "Outstanding Payable",
             style = MaterialTheme.typography.labelSmall,
             color = FigmaMuted
           )
-          CurrencyText(
-            paise = item.outstandingPayablePaise,
-            isReceivable = false,
-            fontSize = 16,
-            fontWeight = FontWeight.Bold
-          )
+          if (isNetAdvance) {
+            Text(
+              text = SubledgerCalculationEngine.formatPaise(kotlin.math.abs(item.outstandingPayablePaise)),
+              fontSize = 16.sp,
+              fontWeight = FontWeight.Bold,
+              color = FigmaTeal
+            )
+          } else {
+            CurrencyText(
+              paise = item.outstandingPayablePaise,
+              isReceivable = false,
+              fontSize = 16,
+              fontWeight = FontWeight.Bold
+            )
+            if (item.availableAdvancePaise > 0L) {
+              Text(
+                text = "Adv: ${SubledgerCalculationEngine.formatPaise(item.availableAdvancePaise)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = FigmaTeal,
+                fontWeight = FontWeight.Medium
+              )
+            }
+          }
         }
       }
     }
@@ -301,7 +335,9 @@ fun AddEditSupplierDialog(
     text = {
       Column(
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState())
       ) {
         if (formState.errorMessage != null) {
           Surface(
@@ -369,6 +405,16 @@ fun AddEditSupplierDialog(
           )
         }
 
+        OutlinedTextField(
+          value = formState.creditLimitRupees,
+          onValueChange = { onUpdateForm { s -> s.copy(creditLimitRupees = it) } },
+          label = { Text("Credit Limit (₹, 0 = Unlimited)") },
+          keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("supplier_credit_limit_input")
+        )
+
         Surface(
           shape = RoundedCornerShape(8.dp),
           color = FigmaSoftTeal,
@@ -388,10 +434,11 @@ fun AddEditSupplierDialog(
     confirmButton = {
       Button(
         onClick = onSave,
+        enabled = !formState.isSaving,
         colors = ButtonDefaults.buttonColors(containerColor = FigmaTeal, contentColor = FigmaWhite),
         modifier = Modifier.testTag("save_supplier_btn")
       ) {
-        Text("Save Supplier")
+        Text(if (formState.isSaving) "Saving..." else "Save Supplier")
       }
     },
     dismissButton = {

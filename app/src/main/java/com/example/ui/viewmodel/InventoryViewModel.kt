@@ -11,6 +11,7 @@ import com.example.domain.model.ProductBatch
 import com.example.domain.model.ProductUnit
 import com.example.domain.model.StockMovement
 import com.example.domain.model.StockMovementType
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -33,6 +34,8 @@ data class InventoryUiState(
   val stockSummaries: List<ProductStockSummary> = emptyList(),
   val recentMovements: List<StockMovement> = emptyList(),
   val totalStockValuePaise: Long = 0L,
+  val sellableStockValuePaise: Long = 0L,
+  val expiredStockValuePaise: Long = 0L,
   val lowStockItemCount: Int = 0,
   val expiringBatchCount: Int = 0,
   val searchQuery: String = "",
@@ -50,6 +53,9 @@ class InventoryViewModel(
   private val _selectedTab = MutableStateFlow(0)
   val selectedTab = _selectedTab.asStateFlow()
 
+  private val _isAdjusting = MutableStateFlow(false)
+  val isAdjusting: StateFlow<Boolean> = _isAdjusting.asStateFlow()
+
   val uiState: StateFlow<InventoryUiState> = combine(
     productRepo.allActiveProducts,
     inventoryRepo.allStockedBatches,
@@ -63,8 +69,8 @@ class InventoryViewModel(
     val summaries = products.map { product ->
       val batches = batchesByProduct[product.id] ?: emptyList()
       val totalPieces = batches.sumOf { it.currentQuantityPieces }
-      val isLowStock = totalPieces <= product.minStockLevelPieces
-      val hasExpired = batches.any { it.isExpired }
+      val isLowStock = FefoInventoryEngine.isProductLowStock(product, batches, now)
+      val hasExpired = batches.any { it.expiryDate <= now }
       val nearExpiryCount = FefoInventoryEngine.getExpiringBatches(batches, 7, now).size
 
       ProductStockSummary(
@@ -88,17 +94,16 @@ class InventoryViewModel(
       }
     }
 
-    val totalStockValue = allBatches.fold(0L) { acc, b ->
-      acc + (b.currentQuantityPieces.toLong() * b.purchaseCostPerPiecePaise)
-    }
-
+    val valuation = FefoInventoryEngine.calculateInventoryValuation(allBatches, now)
     val lowStockCount = summaries.count { it.isLowStock }
     val totalExpiring = summaries.sumOf { it.nearExpiryBatchCount }
 
     InventoryUiState(
       stockSummaries = filteredSummaries,
       recentMovements = movements,
-      totalStockValuePaise = totalStockValue,
+      totalStockValuePaise = valuation.sellableValuePaise,
+      sellableStockValuePaise = valuation.sellableValuePaise,
+      expiredStockValuePaise = valuation.expiredValuePaise,
       lowStockItemCount = lowStockCount,
       expiringBatchCount = totalExpiring,
       searchQuery = query,
@@ -118,15 +123,31 @@ class InventoryViewModel(
     _selectedTab.value = tab
   }
 
-  fun adjustStock(batchId: Long, quantityPieces: Int, reason: String, onDone: () -> Unit = {}) {
+  fun adjustStock(
+    batchId: Long,
+    quantityPieces: Int,
+    reason: String,
+    onDone: () -> Unit = {},
+    onError: (String) -> Unit = {}
+  ) {
+    if (_isAdjusting.value) return
     viewModelScope.launch {
-      inventoryRepo.adjustStock(
-        batchId = batchId,
-        adjustmentPieces = quantityPieces,
-        reason = reason,
-        movementType = StockMovementType.STOCK_ADJUSTMENT
-      )
-      onDone()
+      _isAdjusting.value = true
+      try {
+        inventoryRepo.adjustStock(
+          batchId = batchId,
+          adjustmentPieces = quantityPieces,
+          reason = reason,
+          movementType = StockMovementType.STOCK_ADJUSTMENT
+        )
+        onDone()
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        onError(e.message ?: "Failed to adjust stock")
+      } finally {
+        _isAdjusting.value = false
+      }
     }
   }
 

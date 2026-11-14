@@ -117,7 +117,7 @@ class MainActivity : ComponentActivity() {
       )
     }
     val productViewModel by viewModels<ProductViewModel> {
-      ProductViewModel.Factory(productRepo, supplierRepo)
+      ProductViewModel.Factory(productRepo, supplierRepo, inventoryRepo)
     }
     val supplierViewModel by viewModels<SupplierViewModel> {
       SupplierViewModel.Factory(supplierRepo, subledgerRepo)
@@ -132,10 +132,10 @@ class MainActivity : ComponentActivity() {
       InventoryViewModel.Factory(inventoryRepo, productRepo)
     }
     val purchaseViewModel by viewModels<PurchaseViewModel> {
-      PurchaseViewModel.Factory(purchaseRepo, supplierRepo, productRepo)
+      PurchaseViewModel.Factory(purchaseRepo, supplierRepo, productRepo, subledgerRepo)
     }
     val salesViewModel by viewModels<SalesViewModel> {
-      SalesViewModel.Factory(salesRepo, customerRepo, productRepo, inventoryRepo)
+      SalesViewModel.Factory(salesRepo, customerRepo, productRepo, inventoryRepo, subledgerRepo)
     }
     val expenseViewModel by viewModels<ExpenseViewModel> {
       ExpenseViewModel.Factory(expenseRepo)

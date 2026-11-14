@@ -57,8 +57,8 @@ import com.example.data.local.entity.SupplierEntity
     SalesInvoiceItemEntity::class,
     ExpenseEntity::class
   ],
-  version = 2,
-  exportSchema = false
+  version = 3,
+  exportSchema = true
 )
 abstract class IceTrackDatabase : RoomDatabase() {
 
@@ -92,7 +92,7 @@ abstract class IceTrackDatabase : RoomDatabase() {
           IceTrackDatabase::class.java,
           "icetrack_database.db"
         )
-        .addMigrations(DatabaseMigrations.MIGRATION_1_2)
+        .addMigrations(DatabaseMigrations.MIGRATION_1_2, DatabaseMigrations.MIGRATION_2_3)
         .build()
         INSTANCE = instance
         instance

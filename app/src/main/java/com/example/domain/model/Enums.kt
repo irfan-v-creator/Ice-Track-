@@ -51,3 +51,10 @@ enum class ExpenseCategory(val displayName: String) {
   SALARY_LABOUR("Staff & Loading Labour"),
   MISCELLANEOUS("Miscellaneous / Other")
 }
+
+enum class PaymentAllocationType(val displayName: String) {
+  INVOICE("Invoice Payment"),
+  ADVANCE("Advance / Unallocated"),
+  OPENING_BALANCE("Opening Balance Settlement")
+}
+

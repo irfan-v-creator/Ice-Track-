@@ -7,7 +7,9 @@ import com.example.data.repository.SubledgerRepository
 import com.example.data.repository.SupplierRepository
 import com.example.domain.engine.SubledgerCalculationEngine
 import com.example.domain.model.PartyType
+import com.example.domain.model.PaymentAllocationType
 import com.example.domain.model.Supplier
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -20,11 +22,13 @@ import kotlinx.coroutines.launch
 
 data class SupplierWithBalance(
   val supplier: Supplier,
-  val outstandingPayablePaise: Long
+  val outstandingPayablePaise: Long,
+  val availableAdvancePaise: Long = 0L
 )
 
 data class SupplierFormState(
   val id: Long = 0,
+  val createdAt: Long = System.currentTimeMillis(),
   val name: String = "",
   val contactPerson: String = "",
   val phoneNumber: String = "",
@@ -45,16 +49,23 @@ class SupplierViewModel(
   val searchQuery = MutableStateFlow("")
 
   @OptIn(ExperimentalCoroutinesApi::class)
-  val suppliersWithBalance: StateFlow<List<SupplierWithBalance>> = searchQuery.flatMapLatest { query ->
-    supplierRepository.searchSuppliers(query)
-  }.combine(subledgerRepository.allEntries) { suppliers, entries ->
+  val suppliersWithBalance: StateFlow<List<SupplierWithBalance>> = combine(
+    searchQuery.flatMapLatest { query -> supplierRepository.searchSuppliers(query) },
+    subledgerRepository.allEntries,
+    subledgerRepository.getAllActiveAllocationsByPartyType(PartyType.SUPPLIER)
+  ) { suppliers, entries, allocations ->
     val activeEntries = entries.filter { !it.isReversed && it.partyType == PartyType.SUPPLIER }
     val entriesBySupplier = activeEntries.groupBy { it.partyId }
+    val advancesBySupplier = allocations
+      .filter { !it.isReversed && it.allocationType == PaymentAllocationType.ADVANCE }
+      .groupBy { it.partyId }
+      .mapValues { (_, list) -> list.sumOf { it.allocatedAmountPaise } }
 
     suppliers.map { supplier ->
       val partyEntries = entriesBySupplier[supplier.id] ?: emptyList()
       val payable = SubledgerCalculationEngine.calculateSupplierBalance(partyEntries)
-      SupplierWithBalance(supplier, payable)
+      val advance = advancesBySupplier[supplier.id] ?: 0L
+      SupplierWithBalance(supplier, payable, advance)
     }
   }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -72,14 +83,15 @@ class SupplierViewModel(
   fun openEditDialog(supplier: Supplier) {
     _formState.value = SupplierFormState(
       id = supplier.id,
+      createdAt = supplier.createdAt,
       name = supplier.name,
       contactPerson = supplier.contactPerson,
       phoneNumber = supplier.phoneNumber,
       address = supplier.address,
-      openingBalanceRupees = (supplier.openingBalancePaise / 100.0).toString(),
+      openingBalanceRupees = SubledgerCalculationEngine.formatPaiseForInput(supplier.openingBalancePaise),
       openingBalanceDate = supplier.openingBalanceDate,
       creditTermsDays = supplier.creditTermsDays.toString(),
-      creditLimitRupees = (supplier.creditLimitPaise / 100.0).toString()
+      creditLimitRupees = SubledgerCalculationEngine.formatPaiseForInput(supplier.creditLimitPaise)
     )
   }
 
@@ -89,17 +101,41 @@ class SupplierViewModel(
 
   fun saveSupplier(onSuccess: () -> Unit) {
     val state = _formState.value
+    if (state.isSaving) return
+
     if (state.name.isBlank()) {
       _formState.value = state.copy(errorMessage = "Supplier name cannot be empty")
       return
     }
 
-    val openingPaise = SubledgerCalculationEngine.parseRupeesToPaise(state.openingBalanceRupees)
-    val creditLimitPaise = SubledgerCalculationEngine.parseRupeesToPaise(state.creditLimitRupees)
-    val termsDays = state.creditTermsDays.toIntOrNull() ?: 15
+    val openingPaise = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(
+      state.openingBalanceRupees,
+      allowNegative = true,
+      allowEmptyAsZero = true
+    )
+    if (openingPaise == null) {
+      _formState.value = state.copy(errorMessage = "Invalid opening balance amount. Enter a valid number with up to 2 decimal places.")
+      return
+    }
+
+    val creditLimitPaise = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(
+      state.creditLimitRupees,
+      allowNegative = false,
+      allowEmptyAsZero = true
+    )
+    if (creditLimitPaise == null) {
+      _formState.value = state.copy(errorMessage = "Invalid credit limit amount. Enter a non-negative number.")
+      return
+    }
+
+    val termsDays = if (state.creditTermsDays.isBlank()) 15 else state.creditTermsDays.trim().toIntOrNull()
+    if (termsDays == null || termsDays < 0) {
+      _formState.value = state.copy(errorMessage = "Credit terms must be 0 or greater days")
+      return
+    }
 
     viewModelScope.launch {
-      _formState.value = state.copy(isSaving = true, errorMessage = null)
+      _formState.value = _formState.value.copy(isSaving = true, errorMessage = null)
       try {
         val supplier = Supplier(
           id = state.id,
@@ -110,20 +146,29 @@ class SupplierViewModel(
           openingBalancePaise = openingPaise,
           openingBalanceDate = state.openingBalanceDate,
           creditTermsDays = termsDays,
-          creditLimitPaise = creditLimitPaise
+          creditLimitPaise = creditLimitPaise,
+          createdAt = state.createdAt
         )
         supplierRepository.saveSupplier(supplier)
         _formState.value = SupplierFormState()
         onSuccess()
+      } catch (e: CancellationException) {
+        throw e
       } catch (e: Exception) {
-        _formState.value = state.copy(isSaving = false, errorMessage = "Error saving supplier: ${e.message}")
+        _formState.value = _formState.value.copy(isSaving = false, errorMessage = "Error saving supplier: ${e.message}")
       }
     }
   }
 
   fun deleteSupplier(supplierId: Long) {
     viewModelScope.launch {
-      supplierRepository.softDelete(supplierId)
+      try {
+        supplierRepository.softDelete(supplierId)
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        _formState.value = _formState.value.copy(errorMessage = "Error deleting supplier: ${e.message}")
+      }
     }
   }
 

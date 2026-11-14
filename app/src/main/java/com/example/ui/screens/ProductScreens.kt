@@ -16,8 +16,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
@@ -54,6 +56,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.domain.engine.SubledgerCalculationEngine
 import com.example.domain.model.Product
 import com.example.ui.components.CurrencyText
 import com.example.ui.components.EmptyStateView
@@ -77,6 +80,7 @@ fun ProductListScreen(
   modifier: Modifier = Modifier
 ) {
   val products by viewModel.products.collectAsState()
+  val inventoryValuation by viewModel.inventoryValuation.collectAsState()
   val searchQuery by viewModel.searchQuery.collectAsState()
   val selectedCategory by viewModel.selectedCategory.collectAsState()
   val formState by viewModel.formState.collectAsState()
@@ -165,18 +169,22 @@ fun ProductListScreen(
           .border(1.dp, FigmaLine, RoundedCornerShape(12.dp))
       ) {
         Column(modifier = Modifier.padding(16.dp)) {
-          Text(text = "Inventory at cost", style = MaterialTheme.typography.bodySmall, color = FigmaMuted)
+          Text(text = "Sellable inventory at cost", style = MaterialTheme.typography.bodySmall, color = FigmaMuted)
           Spacer(modifier = Modifier.height(2.dp))
           Text(
-            text = "₹0.00",
+            text = SubledgerCalculationEngine.formatPaise(inventoryValuation.sellableValuePaise),
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
-            color = FigmaInk
+            color = FigmaInk,
+            modifier = Modifier.testTag("product_catalog_stock_value")
           )
           Text(
-            text = "${products.size} products registered in catalog",
+            text = "${products.size} products registered · ${inventoryValuation.sellablePieces} sellable pcs" +
+              if (inventoryValuation.expiredValuePaise > 0L) {
+                " · Expired: ${SubledgerCalculationEngine.formatPaise(inventoryValuation.expiredValuePaise)}"
+              } else "",
             style = MaterialTheme.typography.labelSmall,
-            color = FigmaMuted
+            color = if (inventoryValuation.expiredValuePaise > 0L) FigmaRed else FigmaMuted
           )
         }
       }
@@ -364,7 +372,9 @@ fun AddEditProductDialog(
     text = {
       Column(
         verticalArrangement = Arrangement.spacedBy(10.dp),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState())
       ) {
         if (formState.errorMessage != null) {
           Surface(
@@ -477,10 +487,17 @@ fun AddEditProductDialog(
     confirmButton = {
       Button(
         onClick = onSave,
+        enabled = !formState.isSaving && !formState.isLoadingDetails,
         colors = ButtonDefaults.buttonColors(containerColor = FigmaTeal, contentColor = FigmaWhite),
         modifier = Modifier.testTag("save_product_btn")
       ) {
-        Text("Save Product")
+        Text(
+          when {
+            formState.isSaving -> "Saving..."
+            formState.isLoadingDetails -> "Loading..."
+            else -> "Save Product"
+          }
+        )
       }
     },
     dismissButton = {

@@ -6,6 +6,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.example.domain.model.ExpenseCategory
 import com.example.domain.model.PartyType
+import com.example.domain.model.PaymentAllocationType
 import com.example.domain.model.PaymentMethod
 import com.example.domain.model.PaymentStatus
 import com.example.domain.model.StockMovementType
@@ -162,14 +163,23 @@ data class SubledgerEntryEntity(
 
 @Entity(
   tableName = "payment_allocations",
-  indices = [Index("paymentId"), Index("invoiceId")]
+  indices = [
+    Index("paymentId"),
+    Index("invoiceId"),
+    Index(value = ["partyType", "partyId"]),
+    Index("allocationType")
+  ]
 )
 data class PaymentAllocationEntity(
   @PrimaryKey(autoGenerate = true) val id: Long = 0,
   val paymentId: Long,
-  val invoiceId: Long,
+  val partyType: PartyType,
+  val partyId: Long,
+  val allocationType: PaymentAllocationType,
+  val invoiceId: Long? = null,
   val allocatedAmountPaise: Long,
   val allocatedAt: Long = System.currentTimeMillis(),
+  val notes: String = "",
   val isReversed: Boolean = false
 )
 

@@ -10,8 +10,11 @@ import com.example.data.repository.PurchaseRepository
 import com.example.data.repository.SalesRepository
 import com.example.data.repository.SubledgerRepository
 import com.example.data.repository.SupplierRepository
+import com.example.domain.engine.BusinessReportEngine
+import com.example.domain.engine.FefoInventoryEngine
 import com.example.domain.engine.SubledgerCalculationEngine
 import com.example.domain.model.PartyType
+import com.example.domain.model.PaymentAllocationType
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -23,9 +26,13 @@ data class DashboardUiState(
   val customerCount: Int = 0,
   val totalReceivablesPaise: Long = 0L,
   val totalPayablesPaise: Long = 0L,
+  val totalCustomerAdvancesPaise: Long = 0L,
+  val totalSupplierAdvancesPaise: Long = 0L,
   val todaySalesPaise: Long = 0L,
   val todaySalesCount: Int = 0,
   val todayPurchasesPaise: Long = 0L,
+  val sellableStockValuePaise: Long = 0L,
+  val expiredStockValuePaise: Long = 0L,
   val lowStockCount: Int = 0,
   val expiringBatchCount: Int = 0,
   val businessName: String = "IceTrack Wholesale"
@@ -53,13 +60,35 @@ class DashboardViewModel(
     customerRepository.activeCustomerCount
   ) { p, s, c -> MasterCounts(p, s, c) }
 
-  val uiState: StateFlow<DashboardUiState> = combine(
+  private val advancesFlow = combine(
+    subledgerRepository.getAllActiveAllocationsByPartyType(PartyType.CUSTOMER),
+    subledgerRepository.getAllActiveAllocationsByPartyType(PartyType.SUPPLIER)
+  ) { custAllocs, supAllocs ->
+    val custAdv = custAllocs
+      .filter { !it.isReversed && it.allocationType == PaymentAllocationType.ADVANCE }
+      .sumOf { it.allocatedAmountPaise }
+    val supAdv = supAllocs
+      .filter { !it.isReversed && it.allocationType == PaymentAllocationType.ADVANCE }
+      .sumOf { it.allocatedAmountPaise }
+    custAdv to supAdv
+  }
+
+  private val catalogAndStockFlow = combine(
     masterCountsFlow,
+    productRepository.allActiveProducts,
+    inventoryRepository.allStockedBatches
+  ) { counts, activeProducts, batches ->
+    Triple(counts, activeProducts, batches)
+  }
+
+  val uiState: StateFlow<DashboardUiState> = combine(
+    catalogAndStockFlow,
     subledgerRepository.allEntries,
     salesRepository.allSales,
     purchaseRepository.allPurchases,
-    inventoryRepository.allStockedBatches
-  ) { counts, entries, sales, purchases, batches ->
+    advancesFlow
+  ) { (counts, activeProducts, batches), entries, sales, purchases, (custAdv, supAdv) ->
+    val now = System.currentTimeMillis()
     val activeEntries = entries.filter { !it.isReversed }
 
     val customerEntriesByParty = activeEntries.filter { it.partyType == PartyType.CUSTOMER }.groupBy { it.partyId }
@@ -72,14 +101,16 @@ class DashboardViewModel(
       SubledgerCalculationEngine.calculateSupplierBalance(partyEntries).coerceAtLeast(0L)
     }
 
-    val oneDayAgo = System.currentTimeMillis() - 86400000L
-    val todaySalesList = sales.filter { it.invoiceDate >= oneDayAgo }
+    val todayStart = BusinessReportEngine.computeStartDate("TODAY", now) ?: (now - 86400000L)
+    val todaySalesList = BusinessReportEngine.filterSalesByDateRange(sales, todayStart, null)
     val todaySalesTotal = todaySalesList.sumOf { it.totalAmountPaise }
 
-    val todayPurchasesList = purchases.filter { it.invoiceDate >= oneDayAgo }
+    val todayPurchasesList = BusinessReportEngine.filterPurchasesByDateRange(purchases, todayStart, null)
     val todayPurchasesTotal = todayPurchasesList.sumOf { it.totalAmountPaise }
 
-    val expiringBatches = batches.count { it.expiryDate <= (System.currentTimeMillis() + (7 * 86400000L)) }
+    val valuation = FefoInventoryEngine.calculateInventoryValuation(batches, now)
+    val lowStock = FefoInventoryEngine.computeLowStockCount(activeProducts, batches, now)
+    val expiringBatches = FefoInventoryEngine.getExpiringBatches(batches, 7, now).size
 
     DashboardUiState(
       productCount = counts.products,
@@ -87,10 +118,14 @@ class DashboardViewModel(
       customerCount = counts.customers,
       totalReceivablesPaise = totalReceivables,
       totalPayablesPaise = totalPayables,
+      totalCustomerAdvancesPaise = custAdv,
+      totalSupplierAdvancesPaise = supAdv,
       todaySalesPaise = todaySalesTotal,
       todaySalesCount = todaySalesList.size,
       todayPurchasesPaise = todayPurchasesTotal,
-      lowStockCount = 0,
+      sellableStockValuePaise = valuation.sellableValuePaise,
+      expiredStockValuePaise = valuation.expiredValuePaise,
+      lowStockCount = lowStock,
       expiringBatchCount = expiringBatches
     )
   }.stateIn(

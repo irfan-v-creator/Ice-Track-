@@ -272,6 +272,8 @@ fun ReportsAnalyticsScreen(
             customers = state.customers,
             suppliers = state.suppliers,
             batches = state.batches,
+            sellableStockValuePaise = state.sellableStockValuePaise,
+            expiredStockValuePaise = state.expiredStockValuePaise,
             selectedCustomerId = state.selectedCustomerId,
             selectedSupplierId = state.selectedSupplierId,
             onSelectCustomer = viewModel::selectCustomerForStatement,
@@ -684,6 +686,8 @@ fun ExportDocumentsTab(
   customers: List<Customer>,
   suppliers: List<Supplier>,
   batches: List<ProductBatch>,
+  sellableStockValuePaise: Long = 0L,
+  expiredStockValuePaise: Long = 0L,
   selectedCustomerId: Long?,
   selectedSupplierId: Long?,
   onSelectCustomer: (Long?) -> Unit,
@@ -795,10 +799,12 @@ fun ExportDocumentsTab(
     )
 
     // 6. Inventory Valuation & FEFO Batches
-    val stockValPaise = batches.sumOf { it.currentQuantityPieces.toLong() * it.purchaseCostPerPiecePaise }
+    val expiredSuffix = if (expiredStockValuePaise > 0L) {
+      " • Expired: ${SubledgerCalculationEngine.formatPaise(expiredStockValuePaise)}"
+    } else ""
     ReportExportCard(
       title = "6. Inventory Valuation & FEFO",
-      subtitle = "${batches.size} active batches • Stock Value: ${SubledgerCalculationEngine.formatPaise(stockValPaise)}",
+      subtitle = "${batches.size} active batches • Sellable: ${SubledgerCalculationEngine.formatPaise(sellableStockValuePaise)}$expiredSuffix",
       icon = Icons.Default.Inventory2,
       testTagPrefix = "export_inventory",
       onExport = { format -> onExport(ReportExportType.INVENTORY_FEFO, format) }

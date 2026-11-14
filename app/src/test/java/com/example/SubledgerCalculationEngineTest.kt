@@ -5,7 +5,11 @@ import com.example.domain.model.PartyType
 import com.example.domain.model.SubledgerEntry
 import com.example.domain.model.SubledgerEntryType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class SubledgerCalculationEngineTest {
 
@@ -99,6 +103,49 @@ class SubledgerCalculationEngineTest {
     assertEquals("₹5,240.50", SubledgerCalculationEngine.formatPaise(524050L))
     assertEquals("₹0.00", SubledgerCalculationEngine.formatPaise(0L))
     assertEquals("₹100.00", SubledgerCalculationEngine.formatPaise(10000L))
+    assertEquals("₹1,00,000.00", SubledgerCalculationEngine.formatPaise(10000000L))
+    assertEquals("₹10,00,000.00", SubledgerCalculationEngine.formatPaise(100000000L))
+    assertEquals("₹1,23,45,678.90", SubledgerCalculationEngine.formatPaise(1234567890L))
+    assertEquals("- ₹5,240.50", SubledgerCalculationEngine.formatPaise(-524050L))
+    assertEquals("1,00,000.00", SubledgerCalculationEngine.formatPaise(10000000L, includeSymbol = false))
     assertEquals(524050L, SubledgerCalculationEngine.parseRupeesToPaise("5240.50"))
+  }
+
+  @Test
+  fun testStrictBigDecimalMoneyParsingAndInputFormatting() {
+    assertEquals(1250L, SubledgerCalculationEngine.parseRupeesToPaiseOrNull("12.50"))
+    assertEquals(1250L, SubledgerCalculationEngine.parseRupeesToPaiseOrNull("12.5"))
+    assertEquals(10000000L, SubledgerCalculationEngine.parseRupeesToPaiseOrNull("₹1,00,000.00"))
+    assertEquals(0L, SubledgerCalculationEngine.parseRupeesToPaiseOrNull("", allowEmptyAsZero = true))
+    assertNull(SubledgerCalculationEngine.parseRupeesToPaiseOrNull("", allowEmptyAsZero = false))
+    assertNull(SubledgerCalculationEngine.parseRupeesToPaiseOrNull("abc"))
+    assertNull(SubledgerCalculationEngine.parseRupeesToPaiseOrNull("12.345"))
+    assertNull(SubledgerCalculationEngine.parseRupeesToPaiseOrNull("-50", allowNegative = false))
+    assertEquals(-5000L, SubledgerCalculationEngine.parseRupeesToPaiseOrNull("-50.00", allowNegative = true))
+    assertEquals("12.50", SubledgerCalculationEngine.formatPaiseForInput(1250L))
+    assertEquals("100", SubledgerCalculationEngine.formatPaiseForInput(10000L))
+    assertEquals("-25.50", SubledgerCalculationEngine.formatPaiseForInput(-2550L))
+    assertThrows(IllegalArgumentException::class.java) {
+      SubledgerCalculationEngine.parseRupeesToPaise("invalid_amount")
+    }
+  }
+
+  @Test
+  fun testFormattersAreThreadSafeUnderConcurrency() {
+    val executor = Executors.newFixedThreadPool(8)
+    val futures = (1..200).map { i ->
+      executor.submit<Pair<String, String>> {
+        val formattedMoney = SubledgerCalculationEngine.formatPaise(10000000L + i)
+        val formattedDate = SubledgerCalculationEngine.formatDate(1700000000000L + i * 86400000L)
+        formattedMoney to formattedDate
+      }
+    }
+    executor.shutdown()
+    executor.awaitTermination(10, TimeUnit.SECONDS)
+    futures.forEachIndexed { idx, future ->
+      val (money, date) = future.get()
+      assertEquals(SubledgerCalculationEngine.formatPaise(10000000L + (idx + 1)), money)
+      assertEquals(SubledgerCalculationEngine.formatDate(1700000000000L + (idx + 1) * 86400000L), date)
+    }
   }
 }

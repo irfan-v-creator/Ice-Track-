@@ -14,12 +14,14 @@ import com.example.data.repository.SalesRepository
 import com.example.data.repository.SubledgerRepository
 import com.example.data.repository.SupplierRepository
 import com.example.domain.engine.BusinessReportEngine
+import com.example.domain.engine.FefoInventoryEngine
 import com.example.domain.engine.ProductSalesPerformance
 import com.example.domain.engine.ProfitLossSummary
 import com.example.domain.engine.ShopSalesPerformance
 import com.example.domain.engine.SupplierPurchaseSummary
 import com.example.domain.model.Customer
 import com.example.domain.model.Expense
+import com.example.domain.model.PartyType
 import com.example.domain.model.Product
 import com.example.domain.model.ProductBatch
 import com.example.domain.model.PurchaseInvoice
@@ -29,6 +31,7 @@ import com.example.domain.model.Supplier
 import com.example.service.ExportDocumentService
 import com.example.service.ExportFormat
 import com.example.service.ExportResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -60,6 +63,8 @@ data class ReportsUiState(
   val purchaseInvoices: List<PurchaseInvoice> = emptyList(),
   val products: List<Product> = emptyList(),
   val batches: List<ProductBatch> = emptyList(),
+  val sellableStockValuePaise: Long = 0L,
+  val expiredStockValuePaise: Long = 0L,
   val customers: List<Customer> = emptyList(),
   val suppliers: List<Supplier> = emptyList(),
   val expenses: List<Expense> = emptyList(),
@@ -103,10 +108,10 @@ class ReportsViewModel(
     combine(salesRepo.allSales, salesRepo.allSalesItems, expenseRepo.allExpenses) { sales, items, expenses ->
       Triple(sales, items, expenses)
     },
-    combine(productRepo.allActiveProducts, inventoryRepo.allActiveBatches, purchaseRepo.allPurchases) { prods, allBatches, purchases ->
+    combine(productRepo.allProductsIncludingArchived, inventoryRepo.allBatchesIncludingInactive, purchaseRepo.allPurchases) { prods, allBatches, purchases ->
       Triple(prods, allBatches, purchases)
     },
-    combine(customerRepo.allActiveCustomers, supplierRepo.allActiveSuppliers, subledgerRepo.allEntries) { custs, sups, ledger ->
+    combine(customerRepo.allCustomersIncludingArchived, supplierRepo.allSuppliersIncludingArchived, subledgerRepo.allEntries) { custs, sups, ledger ->
       Triple(custs, sups, ledger)
     },
     combine(_selectedTab, _dateRange, _selectedCustomerId, _selectedSupplierId) { tab, range, custId, supId ->
@@ -115,23 +120,37 @@ class ReportsViewModel(
     combine(_isExporting, _latestExport, _exportMessage) { exporting, latest, msg ->
       Triple(exporting, latest, msg)
     }
-  ) { (sales, items, expenses), (prods, allBatches, purchases), (custs, sups, ledger), navList, exportTuple ->
+  ) { (sales, items, expenses), (allProds, allBatches, purchases), (allCusts, allSups, ledger), navList, exportTuple ->
     val tab = navList[0] as Int
     val range = navList[1] as String
     val custId = navList[2] as Long?
     val supId = navList[3] as Long?
+    val now = System.currentTimeMillis()
 
-    val startDate = BusinessReportEngine.computeStartDate(range)
+    val startDate = BusinessReportEngine.computeStartDate(range, now)
 
-    // Use ALL active batches (including sold-out batches) for true batch-level COGS lookup
+    // Use ALL batches (including deactivated & depleted) so historical COGS never disappears
     val batchCostMap = allBatches.associate { it.id to it.purchaseCostPerPiecePaise }
-    // Current stocked batches (qty > 0) for inventory valuation & FEFO batch report
-    val stockedBatches = allBatches.filter { it.currentQuantityPieces > 0 }
+    // Current active stocked batches (isActive && qty > 0) for inventory valuation & FEFO batch report
+    val stockedBatches = allBatches.filter { it.isActive && it.currentQuantityPieces > 0 }
+    val invValuation = FefoInventoryEngine.calculateInventoryValuation(stockedBatches, now)
 
     val filteredSales = BusinessReportEngine.filterSalesByDateRange(sales, startDate, null)
     val filteredSaleIds = filteredSales.map { it.id }.toSet()
     val filteredSalesItems = items.filter { it.salesInvoiceId in filteredSaleIds }
     val filteredPurchases = BusinessReportEngine.filterPurchasesByDateRange(purchases, startDate, null)
+
+    // Keep all active entities + archived entities that still have financial/transaction/stock history
+    val referencedProductIds = (items.map { it.productId } + stockedBatches.map { it.productId }).toSet()
+    val relevantProducts = allProds.filter { it.isActive || it.id in referencedProductIds }
+
+    val referencedCustomerIds = (sales.map { it.customerId } +
+      ledger.filter { !it.isReversed && it.partyType == PartyType.CUSTOMER }.map { it.partyId }).toSet()
+    val relevantCustomers = allCusts.filter { it.isActive || it.id in referencedCustomerIds }
+
+    val referencedSupplierIds = (purchases.map { it.supplierId } +
+      ledger.filter { !it.isReversed && it.partyType == PartyType.SUPPLIER }.map { it.partyId }).toSet()
+    val relevantSuppliers = allSups.filter { it.isActive || it.id in referencedSupplierIds }
 
     val plSummary = BusinessReportEngine.calculateProfitAndLoss(
       salesInvoices = sales,
@@ -143,18 +162,22 @@ class ReportsViewModel(
     )
 
     val prodSales = BusinessReportEngine.calculateProductSales(
-      products = prods,
+      products = relevantProducts,
       salesItems = filteredSalesItems,
       batchCostMap = batchCostMap
     )
 
-    val custMap = custs.associate { it.id to it.shopName }
+    val custMap = relevantCustomers.associate {
+      it.id to if (it.isActive) it.shopName else "${it.shopName} (Archived)"
+    }
     val shpSales = BusinessReportEngine.calculateShopSales(
       customers = custMap,
       salesInvoices = filteredSales
     )
 
-    val supMap = sups.associate { it.id to it.name }
+    val supMap = relevantSuppliers.associate {
+      it.id to if (it.isActive) it.name else "${it.name} (Archived)"
+    }
     val supPurchases = BusinessReportEngine.calculateSupplierPurchases(
       suppliers = supMap,
       purchaseInvoices = filteredPurchases
@@ -170,10 +193,12 @@ class ReportsViewModel(
       supplierPurchases = supPurchases,
       salesInvoices = filteredSales,
       purchaseInvoices = filteredPurchases,
-      products = prods,
+      products = relevantProducts,
       batches = stockedBatches,
-      customers = custs,
-      suppliers = sups,
+      sellableStockValuePaise = invValuation.sellableValuePaise,
+      expiredStockValuePaise = invValuation.expiredValuePaise,
+      customers = relevantCustomers,
+      suppliers = relevantSuppliers,
       expenses = expenses,
       subledgerEntries = ledger,
       selectedCustomerId = custId,
@@ -281,6 +306,8 @@ class ReportsViewModel(
         }
         _latestExport.value = result
         _exportMessage.value = "${result.reportTitle} (${result.format.label}) ready (${result.file.length()} bytes)"
+      } catch (e: CancellationException) {
+        throw e
       } catch (e: Exception) {
         _exportMessage.value = "Export failed: ${e.message ?: "Unknown error"}"
       } finally {
@@ -305,13 +332,19 @@ class ReportsViewModel(
   fun saveLatestExportToUri(context: Context, uri: Uri) {
     val artifact = _latestExport.value ?: return
     viewModelScope.launch {
-      val result = withContext(Dispatchers.IO) {
-        ExportDocumentService.copyFileToDestinationUri(context, artifact.file, uri)
-      }
-      result.onSuccess { bytesWritten ->
-        _exportMessage.value = "Saved ${artifact.file.name} to device ($bytesWritten bytes)"
-      }.onFailure { err ->
-        _exportMessage.value = "Save failed: ${err.message}"
+      try {
+        val result = withContext(Dispatchers.IO) {
+          ExportDocumentService.copyFileToDestinationUri(context, artifact.file, uri)
+        }
+        result.onSuccess { bytesWritten ->
+          _exportMessage.value = "Saved ${artifact.file.name} to device ($bytesWritten bytes)"
+        }.onFailure { err ->
+          _exportMessage.value = "Save failed: ${err.message}"
+        }
+      } catch (e: CancellationException) {
+        throw e
+      } catch (e: Exception) {
+        _exportMessage.value = "Save failed: ${e.message}"
       }
     }
   }

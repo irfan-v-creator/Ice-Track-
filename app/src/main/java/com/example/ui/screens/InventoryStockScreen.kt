@@ -80,6 +80,7 @@ fun InventoryStockScreen(
   modifier: Modifier = Modifier
 ) {
   val state by viewModel.uiState.collectAsState()
+  val isAdjusting by viewModel.isAdjusting.collectAsState()
   var showAdjustmentDialog by remember { mutableStateOf<ProductBatch?>(null) }
 
   Scaffold(
@@ -115,14 +116,23 @@ fun InventoryStockScreen(
           .border(1.dp, FigmaLine, RoundedCornerShape(12.dp))
       ) {
         Column(modifier = Modifier.padding(16.dp)) {
-          Text(text = "Total inventory stock value", style = MaterialTheme.typography.bodySmall, color = FigmaMuted)
+          Text(text = "Sellable inventory stock value", style = MaterialTheme.typography.bodySmall, color = FigmaMuted)
           Spacer(modifier = Modifier.height(2.dp))
           Text(
-            text = SubledgerCalculationEngine.formatPaise(state.totalStockValuePaise),
+            text = SubledgerCalculationEngine.formatPaise(state.sellableStockValuePaise),
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             color = FigmaInk
           )
+          if (state.expiredStockValuePaise > 0L) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+              text = "Expired stock (unsellable): ${SubledgerCalculationEngine.formatPaise(state.expiredStockValuePaise)}",
+              style = MaterialTheme.typography.labelSmall,
+              color = FigmaRed,
+              fontWeight = FontWeight.SemiBold
+            )
+          }
 
           Spacer(modifier = Modifier.height(10.dp))
           Row(
@@ -268,11 +278,16 @@ fun InventoryStockScreen(
   showAdjustmentDialog?.let { batch ->
     StockAdjustmentDialog(
       batch = batch,
+      isAdjusting = isAdjusting,
       onDismiss = { showAdjustmentDialog = null },
-      onConfirm = { pieces, reason ->
-        viewModel.adjustStock(batch.id, pieces, reason) {
-          showAdjustmentDialog = null
-        }
+      onConfirm = { pieces, reason, onError ->
+        viewModel.adjustStock(
+          batchId = batch.id,
+          quantityPieces = pieces,
+          reason = reason,
+          onDone = { showAdjustmentDialog = null },
+          onError = onError
+        )
       }
     )
   }
@@ -455,8 +470,9 @@ fun StockMovementCard(movement: StockMovement) {
 @Composable
 fun StockAdjustmentDialog(
   batch: ProductBatch,
+  isAdjusting: Boolean = false,
   onDismiss: () -> Unit,
-  onConfirm: (Int, String) -> Unit
+  onConfirm: (Int, String, (String) -> Unit) -> Unit
 ) {
   var piecesInput by remember { mutableStateOf("") }
   var isAddition by remember { mutableStateOf(false) }
@@ -520,15 +536,23 @@ fun StockAdjustmentDialog(
           modifier = Modifier.fillMaxWidth()
         )
 
-        errorText?.let {
-          Text(text = it, color = FigmaRed, fontSize = 12.sp)
+        errorText?.let { err ->
+          Surface(
+            color = FigmaRed.copy(alpha = 0.08f),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .border(1.dp, FigmaRed.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+          ) {
+            Text(text = err, color = FigmaRed, fontSize = 12.sp, modifier = Modifier.padding(8.dp))
+          }
         }
       }
     },
     confirmButton = {
       Button(
         onClick = {
-          val pcs = piecesInput.toIntOrNull()
+          val pcs = piecesInput.trim().toIntOrNull()
           if (pcs == null || pcs <= 0) {
             errorText = "Please enter a valid positive number of pieces"
             return@Button
@@ -544,11 +568,15 @@ fun StockAdjustmentDialog(
             return@Button
           }
 
-          onConfirm(adjustment, reasonInput)
+          errorText = null
+          onConfirm(adjustment, reasonInput.trim()) { err ->
+            errorText = err
+          }
         },
+        enabled = !isAdjusting,
         colors = ButtonDefaults.buttonColors(containerColor = FigmaTeal, contentColor = FigmaWhite)
       ) {
-        Text("Apply Adjustment")
+        Text(if (isAdjusting) "Applying..." else "Apply Adjustment")
       }
     },
     dismissButton = {

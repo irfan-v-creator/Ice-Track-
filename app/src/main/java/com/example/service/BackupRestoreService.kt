@@ -55,7 +55,7 @@ object BackupRestoreService {
   ): String {
     val root = JSONObject()
     root.put("app", "IceTrack")
-    root.put("schemaVersion", 2)
+    root.put("schemaVersion", 3)
     root.put("exportedAt", System.currentTimeMillis())
 
     fun <T> listToJsonArray(list: List<T>, mapper: (T) -> JSONObject): JSONArray {
@@ -157,6 +157,21 @@ object BackupRestoreService {
         put("notes", it.notes)
         put("isReversed", it.isReversed)
         put("createdAt", it.createdAt)
+      }
+    })
+
+    root.put("payment_allocations", listToJsonArray(allocations) {
+      JSONObject().apply {
+        put("id", it.id)
+        put("paymentId", it.paymentId)
+        put("partyType", it.partyType.name)
+        put("partyId", it.partyId)
+        put("allocationType", it.allocationType.name)
+        put("invoiceId", it.invoiceId ?: JSONObject.NULL)
+        put("allocatedAmountPaise", it.allocatedAmountPaise)
+        put("allocatedAt", it.allocatedAt)
+        put("notes", it.notes)
+        put("isReversed", it.isReversed)
       }
     })
 

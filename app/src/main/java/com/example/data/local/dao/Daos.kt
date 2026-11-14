@@ -23,12 +23,17 @@ import com.example.data.local.entity.StockMovementEntity
 import com.example.data.local.entity.SubledgerEntryEntity
 import com.example.data.local.entity.SupplierEntity
 import com.example.domain.model.PartyType
+import com.example.domain.model.PaymentAllocationType
+import com.example.domain.model.SubledgerEntryType
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ProductDao {
   @Query("SELECT * FROM products WHERE isActive = 1 ORDER BY name ASC")
   fun getAllActive(): Flow<List<ProductEntity>>
+
+  @Query("SELECT * FROM products ORDER BY name ASC")
+  fun getAllIncludingArchived(): Flow<List<ProductEntity>>
 
   @Query("SELECT * FROM products WHERE id = :id")
   fun getById(id: Long): Flow<ProductEntity?>
@@ -69,6 +74,9 @@ interface ProductSupplierDao {
   @Query("SELECT * FROM product_suppliers WHERE productId = :productId")
   fun getSuppliersForProduct(productId: Long): Flow<List<ProductSupplierEntity>>
 
+  @Query("SELECT * FROM product_suppliers WHERE productId = :productId")
+  suspend fun getSuppliersForProductSync(productId: Long): List<ProductSupplierEntity>
+
   @Query("SELECT * FROM product_suppliers WHERE supplierId = :supplierId")
   fun getProductsForSupplier(supplierId: Long): Flow<List<ProductSupplierEntity>>
 
@@ -86,6 +94,9 @@ interface ProductSupplierDao {
 interface SupplierDao {
   @Query("SELECT * FROM suppliers WHERE isActive = 1 ORDER BY name ASC")
   fun getAllActive(): Flow<List<SupplierEntity>>
+
+  @Query("SELECT * FROM suppliers ORDER BY name ASC")
+  fun getAllIncludingArchived(): Flow<List<SupplierEntity>>
 
   @Query("SELECT * FROM suppliers WHERE id = :id")
   fun getById(id: Long): Flow<SupplierEntity?>
@@ -114,6 +125,9 @@ interface CustomerDao {
   @Query("SELECT * FROM customers WHERE isActive = 1 ORDER BY shopName ASC")
   fun getAllActive(): Flow<List<CustomerEntity>>
 
+  @Query("SELECT * FROM customers ORDER BY shopName ASC")
+  fun getAllIncludingArchived(): Flow<List<CustomerEntity>>
+
   @Query("SELECT * FROM customers WHERE id = :id")
   fun getById(id: Long): Flow<CustomerEntity?>
 
@@ -141,6 +155,9 @@ interface CustomerProductPriceDao {
   @Query("SELECT * FROM customer_product_prices WHERE customerId = :customerId")
   fun getCustomPricesForCustomer(customerId: Long): Flow<List<CustomerProductPriceEntity>>
 
+  @Query("SELECT * FROM customer_product_prices WHERE customerId = :customerId")
+  suspend fun getCustomPricesForCustomerSync(customerId: Long): List<CustomerProductPriceEntity>
+
   @Query("SELECT * FROM customer_product_prices WHERE customerId = :customerId AND productId = :productId LIMIT 1")
   suspend fun getPrice(customerId: Long, productId: Long): CustomerProductPriceEntity?
 
@@ -149,6 +166,9 @@ interface CustomerProductPriceDao {
 
   @Query("DELETE FROM customer_product_prices WHERE customerId = :customerId AND productId = :productId")
   suspend fun delete(customerId: Long, productId: Long)
+
+  @Query("DELETE FROM customer_product_prices WHERE customerId = :customerId")
+  suspend fun deleteAllForCustomer(customerId: Long)
 }
 
 @Dao
@@ -158,6 +178,13 @@ interface SubledgerDao {
 
   @Query("SELECT * FROM subledger_entries WHERE partyType = :partyType AND partyId = :partyId ORDER BY entryDate ASC, id ASC")
   suspend fun getEntriesForPartySync(partyType: PartyType, partyId: Long): List<SubledgerEntryEntity>
+
+  @Query("SELECT * FROM subledger_entries WHERE partyType = :partyType AND partyId = :partyId AND entryType = :entryType AND isReversed = 0 ORDER BY id ASC")
+  suspend fun getActiveEntriesByTypeForPartySync(
+    partyType: PartyType,
+    partyId: Long,
+    entryType: SubledgerEntryType
+  ): List<SubledgerEntryEntity>
 
   @Query("SELECT * FROM subledger_entries ORDER BY entryDate DESC, id DESC")
   fun getAllEntries(): Flow<List<SubledgerEntryEntity>>
@@ -174,11 +201,36 @@ interface PaymentAllocationDao {
   @Query("SELECT * FROM payment_allocations WHERE paymentId = :paymentId AND isReversed = 0")
   fun getForPayment(paymentId: Long): Flow<List<PaymentAllocationEntity>>
 
-  @Query("SELECT * FROM payment_allocations WHERE invoiceId = :invoiceId AND isReversed = 0")
-  fun getForInvoice(invoiceId: Long): Flow<List<PaymentAllocationEntity>>
+  @Query("SELECT * FROM payment_allocations WHERE partyType = :partyType AND invoiceId = :invoiceId AND allocationType = 'INVOICE' AND isReversed = 0")
+  fun getForInvoice(partyType: PartyType, invoiceId: Long): Flow<List<PaymentAllocationEntity>>
 
-  @Query("SELECT * FROM payment_allocations WHERE invoiceId = :invoiceId AND isReversed = 0")
-  suspend fun getForInvoiceSync(invoiceId: Long): List<PaymentAllocationEntity>
+  @Query("SELECT * FROM payment_allocations WHERE partyType = :partyType AND invoiceId = :invoiceId AND allocationType = 'INVOICE' AND isReversed = 0")
+  suspend fun getForInvoiceSync(partyType: PartyType, invoiceId: Long): List<PaymentAllocationEntity>
+
+  @Query("SELECT * FROM payment_allocations WHERE partyType = :partyType AND partyId = :partyId AND isReversed = 0 ORDER BY allocatedAt ASC, id ASC")
+  fun getActiveAllocationsForParty(partyType: PartyType, partyId: Long): Flow<List<PaymentAllocationEntity>>
+
+  @Query("SELECT * FROM payment_allocations WHERE partyType = :partyType AND isReversed = 0 ORDER BY allocatedAt ASC, id ASC")
+  fun getAllActiveAllocationsByPartyType(partyType: PartyType): Flow<List<PaymentAllocationEntity>>
+
+  @Query("SELECT * FROM payment_allocations WHERE partyType = :partyType AND partyId = :partyId AND allocationType = :allocationType AND isReversed = 0 ORDER BY allocatedAt ASC, id ASC")
+  suspend fun getActiveAllocationsByTypeForPartySync(
+    partyType: PartyType,
+    partyId: Long,
+    allocationType: PaymentAllocationType
+  ): List<PaymentAllocationEntity>
+
+  @Query("SELECT COALESCE(SUM(allocatedAmountPaise), 0) FROM payment_allocations WHERE partyType = :partyType AND partyId = :partyId AND allocationType = 'ADVANCE' AND isReversed = 0")
+  fun getAvailableAdvancePaise(partyType: PartyType, partyId: Long): Flow<Long>
+
+  @Query("SELECT COALESCE(SUM(allocatedAmountPaise), 0) FROM payment_allocations WHERE partyType = :partyType AND partyId = :partyId AND allocationType = 'ADVANCE' AND isReversed = 0")
+  suspend fun getAvailableAdvancePaiseSync(partyType: PartyType, partyId: Long): Long
+
+  @Query("SELECT COALESCE(SUM(allocatedAmountPaise), 0) FROM payment_allocations WHERE partyType = :partyType AND partyId = :partyId AND allocationType = 'OPENING_BALANCE' AND isReversed = 0")
+  suspend fun getTotalAllocatedOpeningBalancePaiseSync(partyType: PartyType, partyId: Long): Long
+
+  @Query("SELECT * FROM payment_allocations WHERE partyType = :partyType AND partyId = :partyId ORDER BY allocatedAt DESC, id DESC")
+  fun getAllIncludingReversedForParty(partyType: PartyType, partyId: Long): Flow<List<PaymentAllocationEntity>>
 
   @Insert(onConflict = OnConflictStrategy.ABORT)
   suspend fun insert(allocation: PaymentAllocationEntity): Long
@@ -191,6 +243,9 @@ interface PaymentAllocationDao {
 interface AppSettingDao {
   @Query("SELECT * FROM app_settings WHERE key = :key LIMIT 1")
   fun get(key: String): Flow<AppSettingEntity?>
+
+  @Query("SELECT * FROM app_settings WHERE key = :key LIMIT 1")
+  suspend fun getSync(key: String): AppSettingEntity?
 
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun set(setting: AppSettingEntity)
@@ -217,6 +272,9 @@ interface ProductBatchDao {
   @Query("SELECT * FROM product_batches WHERE isActive = 1 ORDER BY expiryDate ASC, purchaseDate ASC")
   fun getAllActiveBatches(): Flow<List<ProductBatchEntity>>
 
+  @Query("SELECT * FROM product_batches ORDER BY expiryDate ASC, purchaseDate ASC")
+  fun getAllBatchesIncludingInactive(): Flow<List<ProductBatchEntity>>
+
   @Query("SELECT * FROM product_batches WHERE id = :batchId")
   suspend fun getById(batchId: Long): ProductBatchEntity?
 
@@ -226,11 +284,11 @@ interface ProductBatchDao {
   @Update
   suspend fun update(batch: ProductBatchEntity)
 
-  @Query("UPDATE product_batches SET currentQuantityPieces = currentQuantityPieces - :deductPieces WHERE id = :batchId")
-  suspend fun deductStock(batchId: Long, deductPieces: Int)
+  @Query("UPDATE product_batches SET currentQuantityPieces = currentQuantityPieces - :deductPieces WHERE id = :batchId AND isActive = 1 AND currentQuantityPieces >= :deductPieces")
+  suspend fun deductStockIfAvailable(batchId: Long, deductPieces: Int): Int
 
-  @Query("UPDATE product_batches SET currentQuantityPieces = currentQuantityPieces + :addPieces WHERE id = :batchId")
-  suspend fun addStock(batchId: Long, addPieces: Int)
+  @Query("UPDATE product_batches SET currentQuantityPieces = currentQuantityPieces + :addPieces WHERE id = :batchId AND isActive = 1")
+  suspend fun addStockIfActive(batchId: Long, addPieces: Int): Int
 }
 
 @Dao
@@ -261,6 +319,9 @@ interface PurchaseInvoiceDao {
 
   @Query("SELECT COUNT(*) FROM purchase_invoices")
   suspend fun countInvoices(): Int
+
+  @Query("SELECT COUNT(*) FROM purchase_invoices WHERE invoiceNumber = :invoiceNumber")
+  suspend fun existsByInvoiceNumber(invoiceNumber: String): Int
 
   @Insert(onConflict = OnConflictStrategy.ABORT)
   suspend fun insert(invoice: PurchaseInvoiceEntity): Long
@@ -297,6 +358,9 @@ interface SalesInvoiceDao {
 
   @Query("SELECT COUNT(*) FROM sales_invoices")
   suspend fun countInvoices(): Int
+
+  @Query("SELECT COUNT(*) FROM sales_invoices WHERE invoiceNumber = :invoiceNumber")
+  suspend fun existsByInvoiceNumber(invoiceNumber: String): Int
 
   @Insert(onConflict = OnConflictStrategy.ABORT)
   suspend fun insert(invoice: SalesInvoiceEntity): Long
