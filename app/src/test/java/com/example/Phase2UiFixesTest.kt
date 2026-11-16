@@ -4,6 +4,9 @@ import android.content.Context
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -95,9 +98,7 @@ class Phase2UiFixesTest {
 
     composeTestRule.setContent {
       IceTrackTheme {
-        Box(modifier = Modifier.width(411.dp).height(900.dp)) {
-          PurchaseManagementScreen(viewModel = purchaseVm)
-        }
+        PurchaseManagementScreen(viewModel = purchaseVm)
       }
     }
     composeTestRule.waitUntil(timeoutMillis = 5000) {
@@ -118,7 +119,7 @@ class Phase2UiFixesTest {
       composeTestRule.onNodeWithTag("purchase_payment_method_${method.name}").performScrollTo().assertIsDisplayed()
     }
     composeTestRule.onNodeWithTag("purchase_payment_method_CHEQUE").performScrollTo().performClick()
-    composeTestRule.onNodeWithText("Initial Payment Made (₹)").performScrollTo().performTextInput("60")
+    composeTestRule.onNodeWithText("Initial Payment Made (₹)").performScrollTo().performTextReplacement("60")
     composeTestRule.onNodeWithText("Confirm & Receive Stock").performClick()
 
     composeTestRule.waitUntil(timeoutMillis = 5000) {
@@ -377,10 +378,16 @@ class Phase2UiFixesTest {
     }
 
     val custVm = CustomerViewModel(customerRepo, productRepo, subledgerRepo)
+    val supVm = SupplierViewModel(supplierRepo, subledgerRepo)
+    var showSuppliers by mutableStateOf(false)
     composeTestRule.setContent {
       IceTrackTheme {
         Box(modifier = Modifier.width(411.dp).height(900.dp)) {
-          CustomerListScreen(viewModel = custVm)
+          if (!showSuppliers) {
+            CustomerListScreen(viewModel = custVm)
+          } else {
+            SupplierListScreen(viewModel = supVm)
+          }
         }
       }
     }
@@ -395,14 +402,7 @@ class Phase2UiFixesTest {
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("customer_card_$archivedCustId").assertIsDisplayed()
 
-    val supVm = SupplierViewModel(supplierRepo, subledgerRepo)
-    composeTestRule.setContent {
-      IceTrackTheme {
-        Box(modifier = Modifier.width(411.dp).height(900.dp)) {
-          SupplierListScreen(viewModel = supVm)
-        }
-      }
-    }
+    showSuppliers = true
     composeTestRule.waitUntil(timeoutMillis = 5000) {
       ShadowLooper.idleMainLooper()
       supVm.listSummary.value.totalAllPayablesPaise == 70000L

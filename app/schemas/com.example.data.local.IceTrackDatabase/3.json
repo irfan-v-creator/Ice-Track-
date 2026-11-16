@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 3,
-    "identityHash": "icetrack_v3_reconstructed_schema",
+    "identityHash": "65d4bb19c936ff9bf126840b3b271f85",
     "entities": [
       {
         "tableName": "products",
@@ -1607,7 +1607,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'icetrack_v3_reconstructed_schema')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '65d4bb19c936ff9bf126840b3b271f85')"
     ]
   }
 }

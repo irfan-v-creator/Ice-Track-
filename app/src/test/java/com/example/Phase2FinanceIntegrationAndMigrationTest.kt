@@ -224,7 +224,7 @@ class Phase2FinanceIntegrationAndMigrationTest {
   }
 
   @Test
-  fun overpayment_atInvoiceAndStandalonePayment_capsInvoicePaidAndTracksAdvance() = runBlocking {
+  fun overpayment_atInvoiceAndStandalonePayment_capsInvoicePaidAndTracksAdvance(): Unit = runBlocking {
     val productRepo = ProductRepository(db)
     val supplierRepo = SupplierRepository(db)
     val customerRepo = CustomerRepository(db)
@@ -291,7 +291,7 @@ class Phase2FinanceIntegrationAndMigrationTest {
   }
 
   @Test
-  fun openingBalance_fifoSettlementAndAdvanceSplitting_reconcilesSubledgerAndInvoices() = runBlocking {
+  fun openingBalance_fifoSettlementAndAdvanceSplitting_reconcilesSubledgerAndInvoices(): Unit = runBlocking {
     val productRepo = ProductRepository(db)
     val supplierRepo = SupplierRepository(db)
     val customerRepo = CustomerRepository(db)
@@ -407,7 +407,7 @@ class Phase2FinanceIntegrationAndMigrationTest {
   }
 
   @Test
-  fun creditLimitAndAutoDueDate_forCustomerAndSupplier_enforcedAndOverridable() = runBlocking {
+  fun creditLimitAndAutoDueDate_forCustomerAndSupplier_enforcedAndOverridable(): Unit = runBlocking {
     val productRepo = ProductRepository(db)
     val supplierRepo = SupplierRepository(db)
     val customerRepo = CustomerRepository(db)
@@ -502,7 +502,7 @@ class Phase2FinanceIntegrationAndMigrationTest {
   }
 
   @Test
-  fun saleDispatchStockMovement_recordsActualBatchPurchaseCostPerPiece() = runBlocking {
+  fun saleDispatchStockMovement_recordsActualBatchPurchaseCostPerPiece(): Unit = runBlocking {
     val productRepo = ProductRepository(db)
     val supplierRepo = SupplierRepository(db)
     val customerRepo = CustomerRepository(db)
@@ -555,7 +555,7 @@ class Phase2FinanceIntegrationAndMigrationTest {
   }
 
   @Test
-  fun ssotInventoryValuationLowStockTodayFilterAndArchivedHistory_consistentAcrossViewModels() = runBlocking {
+  fun ssotInventoryValuationLowStockTodayFilterAndArchivedHistory_consistentAcrossViewModels(): Unit = runBlocking {
     val productRepo = ProductRepository(db)
     val supplierRepo = SupplierRepository(db)
     val customerRepo = CustomerRepository(db)
@@ -865,7 +865,7 @@ class Phase2FinanceIntegrationAndMigrationTest {
   }
 
   @Test
-  fun openingBalanceEdit_reconcilesCustomerAndSupplierAllocationsAndPreservesHistory() = runBlocking {
+  fun openingBalanceEdit_reconcilesCustomerAndSupplierAllocationsAndPreservesHistory(): Unit = runBlocking {
     val productRepo = ProductRepository(db)
     val supplierRepo = SupplierRepository(db)
     val customerRepo = CustomerRepository(db)
@@ -966,7 +966,7 @@ class Phase2FinanceIntegrationAndMigrationTest {
   }
 
   @Test
-  fun negativeOpeningBalance_createsAvailableAdvanceAndSettlesFutureInvoicesCleanly() = runBlocking {
+  fun negativeOpeningBalance_createsAvailableAdvanceAndSettlesFutureInvoicesCleanly(): Unit = runBlocking {
     val productRepo = ProductRepository(db)
     val supplierRepo = SupplierRepository(db)
     val customerRepo = CustomerRepository(db)
@@ -1042,7 +1042,7 @@ class Phase2FinanceIntegrationAndMigrationTest {
   }
 
   @Test
-  fun financialSsotParity_dashboardListsReportsStatementsAndExports_agreeToExactPaisaIncludingArchivedParties() = runBlocking {
+  fun financialSsotParity_dashboardListsReportsStatementsAndExports_agreeToExactPaisaIncludingArchivedParties(): Unit = runBlocking {
     val productRepo = ProductRepository(db)
     val supplierRepo = SupplierRepository(db)
     val customerRepo = CustomerRepository(db)
@@ -1124,12 +1124,14 @@ class Phase2FinanceIntegrationAndMigrationTest {
     assertEquals(40000L, sSum.totalActivePayablesPaise)
 
     // Toggle archived visibility in CustomerViewModel & SupplierViewModel
-    assertEquals(2, custVm.customersWithBalance.value.size)
+    val activeCustCards = awaitState(custVm.customersWithBalance) { it.size == 2 }
+    assertEquals(2, activeCustCards.size)
     custVm.toggleIncludeArchived()
     val allCustCards = awaitState(custVm.customersWithBalance) { it.size == 3 }
     assertEquals(18000L, allCustCards.first { it.customer.id == cust2 }.outstandingReceivablePaise)
 
-    assertEquals(2, supVm.suppliersWithBalance.value.size)
+    val activeSupCards = awaitState(supVm.suppliersWithBalance) { it.size == 2 }
+    assertEquals(2, activeSupCards.size)
     supVm.toggleIncludeArchived()
     val allSupCards = awaitState(supVm.suppliersWithBalance) { it.size == 3 }
     assertEquals(25000L, allSupCards.first { it.supplier.id == sup2 }.outstandingPayablePaise)

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -67,6 +68,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
 import com.example.domain.engine.CreditLimitAssessment
 import com.example.domain.engine.PaymentAllocationEngine
 import com.example.domain.engine.SubledgerCalculationEngine
@@ -530,6 +532,10 @@ fun CreatePurchaseInvoiceDialog(
 
   AlertDialog(
     onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false),
+    modifier = Modifier
+      .fillMaxWidth(0.92f)
+      .widthIn(max = 520.dp),
     title = {
       Text(text = "New Purchase Invoice", fontWeight = FontWeight.Bold, color = FigmaInk)
     },
