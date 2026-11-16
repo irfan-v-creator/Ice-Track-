@@ -8,6 +8,8 @@ import androidx.room.Query
 import androidx.room.Update
 import com.example.data.local.entity.AppSettingEntity
 import com.example.data.local.entity.CustomerEntity
+import com.example.data.local.entity.CustomerPaymentReminderEntity
+import com.example.data.local.entity.CustomerPaymentReminderInvoiceEntity
 import com.example.data.local.entity.CustomerProductPriceEntity
 import com.example.data.local.entity.ExpenseEntity
 import com.example.data.local.entity.PaymentAllocationEntity
@@ -407,3 +409,34 @@ interface ExpenseDao {
   @Query("UPDATE expenses SET deletedAt = :deletedAt WHERE id = :id")
   suspend fun softDelete(id: Long, deletedAt: Long = System.currentTimeMillis())
 }
+
+@Dao
+interface CustomerPaymentReminderDao {
+  @Query("SELECT * FROM customer_payment_reminders ORDER BY createdAt DESC, id DESC")
+  fun observeAll(): Flow<List<CustomerPaymentReminderEntity>>
+
+  @Query("SELECT * FROM customer_payment_reminders WHERE customerId = :customerId ORDER BY createdAt DESC, id DESC")
+  fun observeHistoryForCustomer(customerId: Long): Flow<List<CustomerPaymentReminderEntity>>
+
+  @Query("SELECT * FROM customer_payment_reminders WHERE status = 'WHATSAPP_OPENED' AND awaitingUserConfirmation = 1 ORDER BY whatsappOpenedAt DESC, id DESC LIMIT 1")
+  fun observePendingConfirmation(): Flow<CustomerPaymentReminderEntity?>
+
+  @Query("SELECT * FROM customer_payment_reminders WHERE status = 'WHATSAPP_OPENED' AND awaitingUserConfirmation = 1 ORDER BY whatsappOpenedAt DESC, id DESC LIMIT 1")
+  suspend fun getPendingConfirmationSync(): CustomerPaymentReminderEntity?
+
+  @Query("SELECT * FROM customer_payment_reminders WHERE id = :id LIMIT 1")
+  suspend fun getByIdSync(id: Long): CustomerPaymentReminderEntity?
+
+  @Query("SELECT * FROM customer_payment_reminder_invoices WHERE reminderId = :reminderId ORDER BY invoiceDateSnapshot ASC, id ASC")
+  suspend fun getInvoicesForReminderSync(reminderId: Long): List<CustomerPaymentReminderInvoiceEntity>
+
+  @Insert(onConflict = OnConflictStrategy.ABORT)
+  suspend fun insertReminder(reminder: CustomerPaymentReminderEntity): Long
+
+  @Insert(onConflict = OnConflictStrategy.ABORT)
+  suspend fun insertReminderInvoices(items: List<CustomerPaymentReminderInvoiceEntity>)
+
+  @Update
+  suspend fun updateReminder(reminder: CustomerPaymentReminderEntity)
+}
+

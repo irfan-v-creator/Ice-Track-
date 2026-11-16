@@ -12,5 +12,6 @@ enum class Screen(val title: String) {
   PRODUCTS("Products"),
   SUPPLIERS("Suppliers"),
   CUSTOMERS("Customers / Shops"),
+  PAYMENT_REMINDERS("Payment Reminders"),
   SETTINGS("Settings")
 }

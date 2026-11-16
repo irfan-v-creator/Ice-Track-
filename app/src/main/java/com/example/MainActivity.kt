@@ -32,6 +32,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +46,7 @@ import com.example.data.local.IceTrackDatabase
 import com.example.data.repository.CustomerRepository
 import com.example.data.repository.ExpenseRepository
 import com.example.data.repository.InventoryRepository
+import com.example.data.repository.PaymentReminderRepository
 import com.example.data.repository.ProductRepository
 import com.example.data.repository.PurchaseRepository
 import com.example.data.repository.SalesRepository
@@ -59,8 +61,10 @@ import com.example.ui.screens.ExpensesScreen
 import com.example.ui.screens.InventoryStockScreen
 import com.example.ui.screens.MoreScreen
 import com.example.ui.screens.OperationsPlaceholderScreen
+import com.example.ui.screens.PaymentReminderDashboardScreen
 import com.example.ui.screens.ProductListScreen
 import com.example.ui.screens.PurchaseManagementScreen
+import com.example.ui.screens.ReminderSendConfirmationDialog
 import com.example.ui.screens.SalesBillingScreen
 import com.example.ui.screens.ReportsAnalyticsScreen
 import com.example.ui.screens.SettingsScreen
@@ -79,6 +83,7 @@ import com.example.ui.viewmodel.CustomerViewModel
 import com.example.ui.viewmodel.DashboardViewModel
 import com.example.ui.viewmodel.ExpenseViewModel
 import com.example.ui.viewmodel.InventoryViewModel
+import com.example.ui.viewmodel.PaymentReminderViewModel
 import com.example.ui.viewmodel.ProductViewModel
 import com.example.ui.viewmodel.PurchaseViewModel
 import com.example.ui.viewmodel.ReportsViewModel
@@ -104,6 +109,7 @@ class MainActivity : ComponentActivity() {
     val purchaseRepo = PurchaseRepository(database)
     val salesRepo = SalesRepository(database)
     val expenseRepo = ExpenseRepository(database)
+    val reminderRepo = PaymentReminderRepository(database)
 
     val dashboardViewModel by viewModels<DashboardViewModel> {
       DashboardViewModel.Factory(
@@ -152,6 +158,14 @@ class MainActivity : ComponentActivity() {
         subledgerRepo = subledgerRepo
       )
     }
+    val paymentReminderViewModel by viewModels<PaymentReminderViewModel> {
+      PaymentReminderViewModel.Factory(
+        customerRepository = customerRepo,
+        salesRepository = salesRepo,
+        subledgerRepository = subledgerRepo,
+        reminderRepository = reminderRepo
+      )
+    }
 
     setContent {
       IceTrackTheme {
@@ -166,6 +180,7 @@ class MainActivity : ComponentActivity() {
           salesViewModel = salesViewModel,
           expenseViewModel = expenseViewModel,
           reportsViewModel = reportsViewModel,
+          paymentReminderViewModel = paymentReminderViewModel,
           subledgerRepo = subledgerRepo
         )
       }
@@ -186,14 +201,30 @@ fun MainAppContent(
   salesViewModel: SalesViewModel,
   expenseViewModel: ExpenseViewModel,
   reportsViewModel: ReportsViewModel,
+  paymentReminderViewModel: PaymentReminderViewModel,
   subledgerRepo: SubledgerRepository
 ) {
   var currentScreen by remember { mutableStateOf(Screen.DASHBOARD) }
+  var selectedLedgerCustomerId by remember { mutableStateOf<Long?>(null) }
+  var selectedLedgerCustomerName by remember { mutableStateOf<String?>(null) }
+  var returnToRemindersFromLedger by remember { mutableStateOf(false) }
+  val globalPendingConfirmation by paymentReminderViewModel.pendingConfirmation.collectAsState()
+  val customerShopNamesById by paymentReminderViewModel.customerShopNamesById.collectAsState()
 
-  // BackHandler: Return to Dashboard if on any other sub-screen
+  // BackHandler: Return from customer-filtered ledger to Reminders, or sub-screens to Dashboard
   if (currentScreen != Screen.DASHBOARD) {
     BackHandler {
-      currentScreen = Screen.DASHBOARD
+      if (currentScreen == Screen.LEDGER && returnToRemindersFromLedger) {
+        selectedLedgerCustomerId = null
+        selectedLedgerCustomerName = null
+        returnToRemindersFromLedger = false
+        currentScreen = Screen.PAYMENT_REMINDERS
+      } else {
+        selectedLedgerCustomerId = null
+        selectedLedgerCustomerName = null
+        returnToRemindersFromLedger = false
+        currentScreen = Screen.DASHBOARD
+      }
     }
   }
 
@@ -204,7 +235,7 @@ fun MainAppContent(
     Screen.PURCHASE,
     Screen.LEDGER,
     Screen.REPORTS
-  )
+  ) && !(currentScreen == Screen.LEDGER && returnToRemindersFromLedger)
 
   Scaffold(
     containerColor = FigmaBackground,
@@ -217,6 +248,7 @@ fun MainAppContent(
               Screen.PRODUCTS -> "Product Catalog"
               Screen.CUSTOMERS -> "Retail Shops"
               Screen.SUPPLIERS -> "Suppliers"
+              Screen.PAYMENT_REMINDERS -> "Payment Reminders"
               Screen.LEDGER -> "Transaction Subledger"
               Screen.SETTINGS -> "Business Settings"
               Screen.STOCK -> "Inventory Stock"
@@ -234,12 +266,28 @@ fun MainAppContent(
         navigationIcon = {
           if (!isRootDestination) {
             IconButton(
-              onClick = { currentScreen = Screen.DASHBOARD },
+              onClick = {
+                if (currentScreen == Screen.LEDGER && returnToRemindersFromLedger) {
+                  selectedLedgerCustomerId = null
+                  selectedLedgerCustomerName = null
+                  returnToRemindersFromLedger = false
+                  currentScreen = Screen.PAYMENT_REMINDERS
+                } else {
+                  selectedLedgerCustomerId = null
+                  selectedLedgerCustomerName = null
+                  returnToRemindersFromLedger = false
+                  currentScreen = Screen.DASHBOARD
+                }
+              },
               modifier = Modifier.testTag("nav_back_button")
             ) {
               Icon(
                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Back to Dashboard",
+                contentDescription = if (currentScreen == Screen.LEDGER && returnToRemindersFromLedger) {
+                  "Back to Payment Reminders"
+                } else {
+                  "Back to Dashboard"
+                },
                 tint = FigmaNavy
               )
             }
@@ -325,7 +373,12 @@ fun MainAppContent(
         )
         NavigationBarItem(
           selected = currentScreen == Screen.LEDGER,
-          onClick = { currentScreen = Screen.LEDGER },
+          onClick = {
+            selectedLedgerCustomerId = null
+            selectedLedgerCustomerName = null
+            returnToRemindersFromLedger = false
+            currentScreen = Screen.LEDGER
+          },
           icon = { Icon(Icons.Default.AccountBalanceWallet, contentDescription = "Ledger") },
           label = { Text("Ledger", fontSize = 10.sp, maxLines = 1, fontWeight = if (currentScreen == Screen.LEDGER) FontWeight.Bold else FontWeight.Normal) },
           colors = NavigationBarItemDefaults.colors(
@@ -337,10 +390,10 @@ fun MainAppContent(
           )
         )
         NavigationBarItem(
-          selected = currentScreen in listOf(Screen.REPORTS, Screen.MORE, Screen.PRODUCTS, Screen.SUPPLIERS, Screen.CUSTOMERS, Screen.EXPENSES),
+          selected = currentScreen in listOf(Screen.REPORTS, Screen.MORE, Screen.PRODUCTS, Screen.SUPPLIERS, Screen.CUSTOMERS, Screen.EXPENSES, Screen.PAYMENT_REMINDERS),
           onClick = { currentScreen = Screen.MORE },
           icon = { Icon(Icons.Default.Assessment, contentDescription = "More") },
-          label = { Text("More", fontSize = 10.sp, maxLines = 1, fontWeight = if (currentScreen in listOf(Screen.REPORTS, Screen.MORE, Screen.PRODUCTS, Screen.SUPPLIERS, Screen.CUSTOMERS, Screen.EXPENSES)) FontWeight.Bold else FontWeight.Normal) },
+          label = { Text("More", fontSize = 10.sp, maxLines = 1, fontWeight = if (currentScreen in listOf(Screen.REPORTS, Screen.MORE, Screen.PRODUCTS, Screen.SUPPLIERS, Screen.CUSTOMERS, Screen.EXPENSES, Screen.PAYMENT_REMINDERS)) FontWeight.Bold else FontWeight.Normal) },
           colors = NavigationBarItemDefaults.colors(
             indicatorColor = FigmaSoftTeal,
             selectedIconColor = FigmaTeal,
@@ -379,9 +432,35 @@ fun MainAppContent(
         Screen.PRODUCTS -> ProductListScreen(viewModel = productViewModel)
         Screen.CUSTOMERS -> CustomerListScreen(viewModel = customerViewModel)
         Screen.SUPPLIERS -> SupplierListScreen(viewModel = supplierViewModel)
-        Screen.LEDGER -> SubledgerScreen(subledgerRepository = subledgerRepo)
+        Screen.PAYMENT_REMINDERS -> PaymentReminderDashboardScreen(
+          viewModel = paymentReminderViewModel,
+          showPendingConfirmationDialog = false,
+          onViewCustomerLedger = { customer ->
+            selectedLedgerCustomerId = customer.id
+            selectedLedgerCustomerName = customer.shopName
+            returnToRemindersFromLedger = true
+            currentScreen = Screen.LEDGER
+          }
+        )
+        Screen.LEDGER -> SubledgerScreen(
+          subledgerRepository = subledgerRepo,
+          filteredCustomerId = selectedLedgerCustomerId,
+          filteredCustomerName = selectedLedgerCustomerName,
+          onClearCustomerFilter = {
+            selectedLedgerCustomerId = null
+            selectedLedgerCustomerName = null
+            returnToRemindersFromLedger = false
+          }
+        )
         Screen.SETTINGS -> SettingsScreen(viewModel = settingsViewModel)
-        Screen.MORE -> MoreScreen(onNavigate = { currentScreen = it })
+        Screen.MORE -> MoreScreen(onNavigate = {
+          if (it == Screen.LEDGER) {
+            selectedLedgerCustomerId = null
+            selectedLedgerCustomerName = null
+            returnToRemindersFromLedger = false
+          }
+          currentScreen = it
+        })
         Screen.STOCK -> InventoryStockScreen(
           viewModel = inventoryViewModel,
           onNavigateToPurchase = { currentScreen = Screen.PURCHASE }
@@ -392,5 +471,17 @@ fun MainAppContent(
         Screen.REPORTS -> ReportsAnalyticsScreen(viewModel = reportsViewModel)
       }
     }
+  }
+
+  // Global process-death recovery prompt: surfaces even if OS kills app during WhatsApp switch and restarts at Dashboard
+  globalPendingConfirmation?.let { pending ->
+    val customerName = customerShopNamesById[pending.customerId] ?: "Customer #${pending.customerId}"
+    ReminderSendConfirmationDialog(
+      customerName = customerName,
+      reminder = pending,
+      onConfirmSent = { paymentReminderViewModel.confirmPendingReminderSent(pending.id) },
+      onNotSent = { paymentReminderViewModel.markPendingReminderNotSent(pending.id) },
+      onFailed = { paymentReminderViewModel.markPendingReminderFailed(pending.id) }
+    )
   }
 }

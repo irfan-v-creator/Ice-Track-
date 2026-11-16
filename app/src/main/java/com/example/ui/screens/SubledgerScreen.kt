@@ -53,16 +53,25 @@ import com.example.ui.theme.FigmaWhite
 @Composable
 fun SubledgerScreen(
   subledgerRepository: SubledgerRepository,
-  modifier: Modifier = Modifier
+  modifier: Modifier = Modifier,
+  filteredCustomerId: Long? = null,
+  filteredCustomerName: String? = null,
+  onClearCustomerFilter: (() -> Unit)? = null
 ) {
   val entries by subledgerRepository.allEntries.collectAsState(initial = emptyList())
-  var selectedFilter by remember { mutableStateOf("ALL") }
+  var selectedFilter by remember(filteredCustomerId) {
+    mutableStateOf(if (filteredCustomerId != null) "CUSTOMER" else "ALL")
+  }
 
   val filteredEntries = entries.filter { entry ->
-    when (selectedFilter) {
-      "CUSTOMER" -> entry.partyType == PartyType.CUSTOMER
-      "SUPPLIER" -> entry.partyType == PartyType.SUPPLIER
-      else -> true
+    if (filteredCustomerId != null) {
+      entry.partyType == PartyType.CUSTOMER && entry.partyId == filteredCustomerId
+    } else {
+      when (selectedFilter) {
+        "CUSTOMER" -> entry.partyType == PartyType.CUSTOMER
+        "SUPPLIER" -> entry.partyType == PartyType.SUPPLIER
+        else -> true
+      }
     }
   }
 
@@ -99,8 +108,50 @@ fun SubledgerScreen(
 
     Spacer(modifier = Modifier.height(14.dp))
 
-    // Filter Chips (Soft Teal container for active)
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    if (filteredCustomerId != null) {
+      val customerBalance = SubledgerCalculationEngine.calculateCustomerBalance(filteredEntries)
+      Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = FigmaSoftTeal,
+        modifier = Modifier
+          .fillMaxWidth()
+          .border(1.dp, FigmaTeal, RoundedCornerShape(10.dp))
+          .testTag("subledger_customer_filter_banner")
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "Customer Ledger: ${filteredCustomerName ?: "Customer #$filteredCustomerId"}",
+              style = MaterialTheme.typography.labelLarge,
+              fontWeight = FontWeight.Bold,
+              color = FigmaInk
+            )
+            Text(
+              text = "Live SSOT Outstanding: ${SubledgerCalculationEngine.formatPaise(customerBalance)} • ${filteredEntries.size} entries",
+              style = MaterialTheme.typography.labelSmall,
+              color = FigmaTeal
+            )
+          }
+          if (onClearCustomerFilter != null) {
+            androidx.compose.material3.TextButton(
+              onClick = onClearCustomerFilter,
+              modifier = Modifier.testTag("clear_subledger_customer_filter_btn")
+            ) {
+              Text("Show All", color = FigmaNavy, fontWeight = FontWeight.SemiBold)
+            }
+          }
+        }
+      }
+      Spacer(modifier = Modifier.height(12.dp))
+    } else {
+      // Filter Chips (Soft Teal container for active)
+      Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
       FilterChip(
         selected = selectedFilter == "ALL",
         onClick = { selectedFilter = "ALL" },
@@ -152,6 +203,7 @@ fun SubledgerScreen(
           selected = selectedFilter == "SUPPLIER"
         )
       )
+      }
     }
 
     Spacer(modifier = Modifier.height(14.dp))

@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.example.data.local.dao.AppSettingDao
 import com.example.data.local.dao.CustomerDao
+import com.example.data.local.dao.CustomerPaymentReminderDao
 import com.example.data.local.dao.CustomerProductPriceDao
 import com.example.data.local.dao.ExpenseDao
 import com.example.data.local.dao.PaymentAllocationDao
@@ -22,6 +23,8 @@ import com.example.data.local.dao.SubledgerDao
 import com.example.data.local.dao.SupplierDao
 import com.example.data.local.entity.AppSettingEntity
 import com.example.data.local.entity.CustomerEntity
+import com.example.data.local.entity.CustomerPaymentReminderEntity
+import com.example.data.local.entity.CustomerPaymentReminderInvoiceEntity
 import com.example.data.local.entity.CustomerProductPriceEntity
 import com.example.data.local.entity.ExpenseEntity
 import com.example.data.local.entity.PaymentAllocationEntity
@@ -55,9 +58,11 @@ import com.example.data.local.entity.SupplierEntity
     PurchaseInvoiceItemEntity::class,
     SalesInvoiceEntity::class,
     SalesInvoiceItemEntity::class,
-    ExpenseEntity::class
+    ExpenseEntity::class,
+    CustomerPaymentReminderEntity::class,
+    CustomerPaymentReminderInvoiceEntity::class
   ],
-  version = 3,
+  version = 4,
   exportSchema = true
 )
 abstract class IceTrackDatabase : RoomDatabase() {
@@ -80,6 +85,7 @@ abstract class IceTrackDatabase : RoomDatabase() {
   abstract fun salesInvoiceDao(): SalesInvoiceDao
   abstract fun salesInvoiceItemDao(): SalesInvoiceItemDao
   abstract fun expenseDao(): ExpenseDao
+  abstract fun customerPaymentReminderDao(): CustomerPaymentReminderDao
 
   companion object {
     @Volatile
@@ -92,7 +98,11 @@ abstract class IceTrackDatabase : RoomDatabase() {
           IceTrackDatabase::class.java,
           "icetrack_database.db"
         )
-        .addMigrations(DatabaseMigrations.MIGRATION_1_2, DatabaseMigrations.MIGRATION_2_3)
+        .addMigrations(
+          DatabaseMigrations.MIGRATION_1_2,
+          DatabaseMigrations.MIGRATION_2_3,
+          DatabaseMigrations.MIGRATION_3_4
+        )
         .build()
         INSTANCE = instance
         instance

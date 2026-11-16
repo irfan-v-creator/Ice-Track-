@@ -628,4 +628,55 @@ object DatabaseMigrations {
       }
     }
   }
+
+  val MIGRATION_3_4 = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+      db.execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS `customer_payment_reminders` (
+          `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          `customerId` INTEGER NOT NULL,
+          `targetPhoneE164` TEXT NOT NULL,
+          `dueKind` TEXT NOT NULL,
+          `status` TEXT NOT NULL,
+          `snapshotPendingInvoiceCount` INTEGER NOT NULL,
+          `snapshotTotalInvoicePaise` INTEGER NOT NULL,
+          `snapshotTotalInvoicePendingPaise` INTEGER NOT NULL,
+          `snapshotNetOutstandingPaise` INTEGER NOT NULL,
+          `renderedMessage` TEXT NOT NULL,
+          `whatsappPackageUsed` TEXT,
+          `failureReason` TEXT,
+          `awaitingUserConfirmation` INTEGER NOT NULL,
+          `createdAt` INTEGER NOT NULL,
+          `whatsappOpenedAt` INTEGER,
+          `confirmedSentAt` INTEGER,
+          `updatedAt` INTEGER NOT NULL,
+          FOREIGN KEY(`customerId`) REFERENCES `customers`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT
+        )
+        """.trimIndent()
+      )
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_customer_payment_reminders_customerId` ON `customer_payment_reminders` (`customerId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_customer_payment_reminders_status` ON `customer_payment_reminders` (`status`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_customer_payment_reminders_whatsappOpenedAt` ON `customer_payment_reminders` (`whatsappOpenedAt`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_customer_payment_reminders_createdAt` ON `customer_payment_reminders` (`createdAt`)")
+
+      db.execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS `customer_payment_reminder_invoices` (
+          `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          `reminderId` INTEGER NOT NULL,
+          `salesInvoiceId` INTEGER NOT NULL,
+          `invoiceDateSnapshot` INTEGER NOT NULL,
+          `totalAmountPaiseSnapshot` INTEGER NOT NULL,
+          `pendingAmountPaiseSnapshot` INTEGER NOT NULL,
+          FOREIGN KEY(`reminderId`) REFERENCES `customer_payment_reminders`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+          FOREIGN KEY(`salesInvoiceId`) REFERENCES `sales_invoices`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT
+        )
+        """.trimIndent()
+      )
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_customer_payment_reminder_invoices_reminderId` ON `customer_payment_reminder_invoices` (`reminderId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_customer_payment_reminder_invoices_salesInvoiceId` ON `customer_payment_reminder_invoices` (`salesInvoiceId`)")
+    }
+  }
 }
+

@@ -58,3 +58,14 @@ enum class PaymentAllocationType(val displayName: String) {
   OPENING_BALANCE("Opening Balance Settlement")
 }
 
+enum class ReminderStatus(val displayName: String) {
+  DRAFT("Draft"),
+  WHATSAPP_OPENED("WhatsApp Opened"),
+  USER_CONFIRMED_SENT("Confirmed Sent"),
+  FAILED("Failed")
+}
+
+enum class ReminderDueKind(val displayName: String) {
+  INVOICE_BASED("Invoice Dues"),
+  ACCOUNT_DUE("Opening / Account Due")
+}

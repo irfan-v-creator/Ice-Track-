@@ -371,3 +371,71 @@ data class ExpenseEntity(
   val createdAt: Long = System.currentTimeMillis(),
   val deletedAt: Long? = null
 )
+
+@Entity(
+  tableName = "customer_payment_reminders",
+  foreignKeys = [
+    ForeignKey(
+      entity = CustomerEntity::class,
+      parentColumns = ["id"],
+      childColumns = ["customerId"],
+      onDelete = ForeignKey.RESTRICT
+    )
+  ],
+  indices = [
+    Index("customerId"),
+    Index("status"),
+    Index("whatsappOpenedAt"),
+    Index("createdAt")
+  ]
+)
+data class CustomerPaymentReminderEntity(
+  @PrimaryKey(autoGenerate = true) val id: Long = 0,
+  val customerId: Long,
+  val targetPhoneE164: String,
+  val dueKind: com.example.domain.model.ReminderDueKind,
+  val status: com.example.domain.model.ReminderStatus,
+  val snapshotPendingInvoiceCount: Int,
+  val snapshotTotalInvoicePaise: Long,
+  val snapshotTotalInvoicePendingPaise: Long,
+  val snapshotNetOutstandingPaise: Long,
+  val renderedMessage: String,
+  val whatsappPackageUsed: String? = null,
+  val failureReason: String? = null,
+  val awaitingUserConfirmation: Boolean = false,
+  val createdAt: Long = System.currentTimeMillis(),
+  val whatsappOpenedAt: Long? = null,
+  val confirmedSentAt: Long? = null,
+  val updatedAt: Long = System.currentTimeMillis()
+)
+
+@Entity(
+  tableName = "customer_payment_reminder_invoices",
+  foreignKeys = [
+    ForeignKey(
+      entity = CustomerPaymentReminderEntity::class,
+      parentColumns = ["id"],
+      childColumns = ["reminderId"],
+      onDelete = ForeignKey.CASCADE
+    ),
+    ForeignKey(
+      entity = SalesInvoiceEntity::class,
+      parentColumns = ["id"],
+      childColumns = ["salesInvoiceId"],
+      onDelete = ForeignKey.RESTRICT
+    )
+  ],
+  indices = [
+    Index("reminderId"),
+    Index("salesInvoiceId")
+  ]
+)
+data class CustomerPaymentReminderInvoiceEntity(
+  @PrimaryKey(autoGenerate = true) val id: Long = 0,
+  val reminderId: Long,
+  val salesInvoiceId: Long,
+  val invoiceDateSnapshot: Long,
+  val totalAmountPaiseSnapshot: Long,
+  val pendingAmountPaiseSnapshot: Long
+)
+

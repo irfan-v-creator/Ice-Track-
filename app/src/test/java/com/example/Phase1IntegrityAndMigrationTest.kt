@@ -155,9 +155,13 @@ class Phase1IntegrityAndMigrationTest {
     }
     migratedDb.close()
 
-    // 4. Open with Room IceTrackDatabase to confirm full upgrade through V3 and DAO operations succeed cleanly
+    // 4. Open with Room IceTrackDatabase to confirm full upgrade through V4 and DAO operations succeed cleanly
     val roomDb = Room.databaseBuilder(context, IceTrackDatabase::class.java, dbName)
-      .addMigrations(DatabaseMigrations.MIGRATION_1_2, DatabaseMigrations.MIGRATION_2_3)
+      .addMigrations(
+        DatabaseMigrations.MIGRATION_1_2,
+        DatabaseMigrations.MIGRATION_2_3,
+        DatabaseMigrations.MIGRATION_3_4
+      )
       .allowMainThreadQueries()
       .build()
     try {

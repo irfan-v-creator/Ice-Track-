@@ -211,3 +211,33 @@ data class Expense(
   val createdAt: Long = System.currentTimeMillis(),
   val deletedAt: Long? = null
 )
+
+data class CustomerPaymentReminder(
+  val id: Long = 0,
+  val customerId: Long,
+  val targetPhoneE164: String,
+  val dueKind: ReminderDueKind,
+  val status: ReminderStatus,
+  val snapshotPendingInvoiceCount: Int,
+  val snapshotTotalInvoicePaise: Long,
+  val snapshotTotalInvoicePendingPaise: Long,
+  val snapshotNetOutstandingPaise: Long,
+  val renderedMessage: String,
+  val whatsappPackageUsed: String? = null,
+  val failureReason: String? = null,
+  val awaitingUserConfirmation: Boolean = false,
+  val createdAt: Long = System.currentTimeMillis(),
+  val whatsappOpenedAt: Long? = null,
+  val confirmedSentAt: Long? = null,
+  val updatedAt: Long = System.currentTimeMillis()
+)
+
+data class CustomerPaymentReminderInvoice(
+  val id: Long = 0,
+  val reminderId: Long,
+  val salesInvoiceId: Long,
+  val invoiceDateSnapshot: Long,
+  val totalAmountPaiseSnapshot: Long,
+  val pendingAmountPaiseSnapshot: Long
+)
+

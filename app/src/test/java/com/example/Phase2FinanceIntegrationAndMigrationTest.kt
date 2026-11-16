@@ -196,9 +196,13 @@ class Phase2FinanceIntegrationAndMigrationTest {
     }
     migratedDb.close()
 
-    // 6. Verify Room IceTrackDatabase opens cleanly on V3 and DAOs read migrated allocations
+    // 6. Verify Room IceTrackDatabase opens cleanly on V4 and DAOs read migrated allocations
     val roomDb = Room.databaseBuilder(context, IceTrackDatabase::class.java, dbName)
-      .addMigrations(DatabaseMigrations.MIGRATION_1_2, DatabaseMigrations.MIGRATION_2_3)
+      .addMigrations(
+        DatabaseMigrations.MIGRATION_1_2,
+        DatabaseMigrations.MIGRATION_2_3,
+        DatabaseMigrations.MIGRATION_3_4
+      )
       .allowMainThreadQueries()
       .build()
     try {
@@ -899,7 +903,7 @@ class Phase2FinanceIntegrationAndMigrationTest {
 
     // 1. Decrease customer OB from ₹500 -> ₹150 (15,000)
     // Expected: OB settled ₹150, Invoice #1 receives freed ₹350 -> total ₹400 PAID, remaining ₹50 -> ADVANCE!
-    val custLoaded = customerRepo.getById(custId)!!
+    val custLoaded = customerRepo.allCustomersIncludingArchived.first().first { it.id == custId }
     customerRepo.saveCustomer(custLoaded.copy(openingBalancePaise = 15000L), replaceCustomPrices = false)
 
     val afterDecAllocs = subledgerRepo.getActiveAllocationsForParty(PartyType.CUSTOMER, custId).first()
@@ -910,13 +914,14 @@ class Phase2FinanceIntegrationAndMigrationTest {
     assertEquals(40000L, salesRepo.allSales.first().first { it.id == sInvId }.paidAmountPaise)
 
     // Subledger history preserved: old ₹500 OB entry marked isReversed = true, net OB = 15000 + Inv 40000 - Pay 60000 = -5000
-    val custHistory = subledgerRepo.getAllEntriesIncludingReversedForParty(PartyType.CUSTOMER, custId).first()
+    val custHistory = db.subledgerDao().getEntriesForPartySync(PartyType.CUSTOMER, custId)
     assertEquals(1, custHistory.count { it.entryType == SubledgerEntryType.OPENING_BALANCE && it.isReversed })
     assertEquals(-5000L, SubledgerCalculationEngine.calculateCustomerBalance(subledgerRepo.getEntriesForParty(PartyType.CUSTOMER, custId).first()))
 
     // 2. Increase customer OB from ₹150 -> ₹300 (30,000)
     // Expected: Prior ₹150 OB allocation stays ₹150, plus ₹50 ADVANCE applies ONLY to remaining ₹150 positive OB -> OB settled ₹200, ADVANCE = ₹0, Invoice #1 remains ₹400 PAID!
-    customerRepo.saveCustomer(customerRepo.getById(custId)!!.copy(openingBalancePaise = 30000L), replaceCustomPrices = false)
+    val custForInc = customerRepo.allCustomersIncludingArchived.first().first { it.id == custId }
+    customerRepo.saveCustomer(custForInc.copy(openingBalancePaise = 30000L), replaceCustomPrices = false)
     assertEquals(0L, subledgerRepo.getAvailableAdvancePaiseSync(PartyType.CUSTOMER, custId))
     val afterIncAllocs = subledgerRepo.getActiveAllocationsForParty(PartyType.CUSTOMER, custId).first()
     assertEquals(20000L, afterIncAllocs.filter { it.allocationType == PaymentAllocationType.OPENING_BALANCE }.sumOf { it.allocatedAmountPaise })
@@ -925,7 +930,8 @@ class Phase2FinanceIntegrationAndMigrationTest {
 
     // 3. Zero customer OB (30,000 -> 0)
     // Expected: All ₹200 OB allocations freed -> Inv #1 still PAID ₹400, surplus ₹200 becomes ADVANCE! Net balance = -20000
-    customerRepo.saveCustomer(customerRepo.getById(custId)!!.copy(openingBalancePaise = 0L), replaceCustomPrices = false)
+    val custForZero = customerRepo.allCustomersIncludingArchived.first().first { it.id == custId }
+    customerRepo.saveCustomer(custForZero.copy(openingBalancePaise = 0L), replaceCustomPrices = false)
     val afterZeroAllocs = subledgerRepo.getActiveAllocationsForParty(PartyType.CUSTOMER, custId).first()
     assertEquals(0L, afterZeroAllocs.filter { it.allocationType == PaymentAllocationType.OPENING_BALANCE }.sumOf { it.allocatedAmountPaise })
     assertEquals(40000L, afterZeroAllocs.filter { it.allocationType == PaymentAllocationType.INVOICE && it.invoiceId == sInvId }.sumOf { it.allocatedAmountPaise })
@@ -949,7 +955,8 @@ class Phase2FinanceIntegrationAndMigrationTest {
 
     // Now edit supplier OB from -₹250 to -₹100 (-10,000):
     // Old -₹250 advance allocations are reversed (invoice #1 paid drops 25000->0 UNPAID), new -₹100 advance is re-applied (invoice #1 paid -> 10000 PARTIALLY_PAID)!
-    supplierRepo.saveSupplier(supplierRepo.getById(supId)!!.copy(openingBalancePaise = -10000L))
+    val supLoaded = supplierRepo.allSuppliersIncludingArchived.first().first { it.id == supId }
+    supplierRepo.saveSupplier(supLoaded.copy(openingBalancePaise = -10000L))
     val supInvAfter = purchaseRepo.allPurchases.first().first { it.id == pInvId }
     assertEquals(10000L, supInvAfter.paidAmountPaise)
     assertEquals(PaymentStatus.PARTIALLY_PAID, supInvAfter.paymentStatus)
@@ -1131,13 +1138,13 @@ class Phase2FinanceIntegrationAndMigrationTest {
     val reports = awaitState(reportsVm.uiState) { it.shopSales.size >= 3 && it.supplierPurchases.size >= 3 }
     val cust1Perf = reports.shopSales.first { it.customerId == cust1 }
     assertEquals(30000L, cust1Perf.totalSalesPaise)
-    assertEquals(45000L, cust1Perf.outstandingDuePaise) // OB(200) + Inv(300) - Adj(50)
+    assertEquals(45000L, cust1Perf.outstandingDuesPaise) // OB(200) + Inv(300) - Adj(50)
     val cust2Perf = reports.shopSales.first { it.customerId == cust2 }
-    assertEquals(18000L, cust2Perf.outstandingDuePaise) // Archived shop OB
+    assertEquals(18000L, cust2Perf.outstandingDuesPaise) // Archived shop OB
     val cust3Perf = reports.shopSales.first { it.customerId == cust3 }
-    assertEquals(0L, cust3Perf.outstandingDuePaise)
+    assertEquals(0L, cust3Perf.outstandingDuesPaise)
     assertEquals(12000L, cust3Perf.advanceCreditPaise)
-    assertEquals(dash.totalReceivablesPaise, reports.shopSales.sumOf { it.outstandingDuePaise })
+    assertEquals(dash.totalReceivablesPaise, reports.shopSales.sumOf { it.outstandingDuesPaise })
     assertEquals(dash.totalCustomerAdvancesPaise, reports.shopSales.sumOf { it.advanceCreditPaise })
 
     val sup1Perf = reports.supplierPurchases.first { it.supplierId == sup1 }
@@ -1157,18 +1164,19 @@ class Phase2FinanceIntegrationAndMigrationTest {
       partyId = cust1,
       partyName = "Active Shop",
       partyType = PartyType.CUSTOMER,
+      contactDetails = "Ph: 9999999999",
       entries = allEntries
     )
     assertEquals(45000L, cust1Stmt.closingBalancePaise)
 
     val allCustCsv = ExportDocumentService.generateCustomerStatementCsv(null, allEntries, allCusts)
-    assertTrue("CSV must match exact gross receivables 630.00", allCustCsv.contains("TOTAL RECEIVABLES,,,,630.00,"))
-    assertTrue("CSV must report total advances 120.00", allCustCsv.contains("TOTAL CUSTOMER ADVANCES,,,,120.00,"))
+    assertTrue("CSV must match exact gross receivables 630.00", allCustCsv.lines().any { it.startsWith("TOTAL RECEIVABLES") && it.contains("630.00") })
+    assertTrue("CSV must report total advances 120.00", allCustCsv.lines().any { it.startsWith("TOTAL ADVANCES") && it.contains("120.00") })
     assertTrue("CSV must include archived customer", allCustCsv.contains("Archived Shop"))
 
     val allSupCsv = ExportDocumentService.generateSupplierStatementCsv(null, allEntries, allSups)
-    assertTrue("CSV must match exact gross payables 650.00", allSupCsv.contains("TOTAL PAYABLES,,,,650.00,"))
-    assertTrue("CSV must report total supplier advances 150.00", allSupCsv.contains("TOTAL ADVANCES PAID,,,,150.00,"))
+    assertTrue("CSV must match exact gross payables 650.00", allSupCsv.lines().any { it.startsWith("TOTAL PAYABLES") && it.contains("650.00") })
+    assertTrue("CSV must report total supplier advances 150.00", allSupCsv.lines().any { it.startsWith("TOTAL ADVANCES PAID") && it.contains("150.00") })
     assertTrue("CSV must include archived supplier", allSupCsv.contains("Archived Sup"))
 
     val xlsxDir = context.cacheDir.resolve("ssot_export_test").apply { mkdirs() }

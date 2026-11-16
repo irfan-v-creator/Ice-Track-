@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.Business
 import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Store
@@ -82,6 +83,13 @@ fun MoreScreen(
       subtitle = "Manage shops, custom prices, credit limits & AR balances",
       icon = Icons.Default.Store,
       onClick = { onNavigate(Screen.CUSTOMERS) }
+    )
+
+    MoreMenuItem(
+      title = "WhatsApp Payment Reminders",
+      subtitle = "Pending dues dashboard, ledger-verified messages & audit history",
+      icon = Icons.Default.NotificationsActive,
+      onClick = { onNavigate(Screen.PAYMENT_REMINDERS) }
     )
 
     MoreMenuItem(
