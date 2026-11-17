@@ -201,7 +201,8 @@ class Phase2FinanceIntegrationAndMigrationTest {
       .addMigrations(
         DatabaseMigrations.MIGRATION_1_2,
         DatabaseMigrations.MIGRATION_2_3,
-        DatabaseMigrations.MIGRATION_3_4
+        DatabaseMigrations.MIGRATION_3_4,
+        DatabaseMigrations.MIGRATION_4_5
       )
       .allowMainThreadQueries()
       .build()

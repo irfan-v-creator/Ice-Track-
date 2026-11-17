@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -65,10 +66,15 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
+import android.content.Intent
+import androidx.compose.ui.platform.LocalContext
+import com.example.data.repository.InvoiceLifecycleRepository
 import com.example.domain.engine.CreditLimitAssessment
 import com.example.domain.engine.PaymentAllocationEngine
 import com.example.domain.engine.SubledgerCalculationEngine
 import com.example.domain.model.Customer
+import com.example.domain.model.InvoiceStatus
 import com.example.domain.model.PaymentMethod
 import com.example.domain.model.PaymentStatus
 import com.example.domain.model.Product
@@ -108,16 +114,26 @@ fun SalesBillingScreen(
 ) {
   val salesInvoices by viewModel.salesInvoices.collectAsState()
   val customers by viewModel.customers.collectAsState()
+  val allCustomers by viewModel.allCustomersIncludingArchived.collectAsState()
   val products by viewModel.products.collectAsState()
+  val allProducts by viewModel.allProductsIncludingArchived.collectAsState()
   val customerBalances by viewModel.customerBalances.collectAsState()
   val customerAdvances by viewModel.customerAdvances.collectAsState()
   val isSubmitting by viewModel.isSubmitting.collectAsState()
+  val selectedSalesDetail by viewModel.selectedSalesDetail.collectAsState()
+  val context = LocalContext.current
 
   var showNewSaleDialog by remember { mutableStateOf(false) }
   var pendingCreditOverride by remember { mutableStateOf<PendingSaleCreditOverride?>(null) }
   var overrideFailureError by remember { mutableStateOf<String?>(null) }
   var showCustomerPaymentDialog by remember { mutableStateOf<Customer?>(null) }
-  var selectedInvoiceDetail by remember { mutableStateOf<SalesInvoice?>(null) }
+  var showEditDetailDialog by remember { mutableStateOf(false) }
+  var showReturnDetailDialog by remember { mutableStateOf(false) }
+  var showCancelDetailDialog by remember { mutableStateOf(false) }
+  var pendingEditCreditOverride by remember {
+    mutableStateOf<Pair<InvoiceLifecycleRepository.EditSalesInvoiceRequest, CreditLimitAssessment>?>(null)
+  }
+  var editExternalError by remember { mutableStateOf<String?>(null) }
   val snackbarHostState = remember { SnackbarHostState() }
   val scope = rememberCoroutineScope()
 
@@ -218,11 +234,16 @@ fun SalesBillingScreen(
           verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
           items(salesInvoices, key = { it.id }) { invoice ->
-            val customer = customers.find { it.id == invoice.customerId }
+            val customer = allCustomers.find { it.id == invoice.customerId } ?: customers.find { it.id == invoice.customerId }
             SalesInvoiceCard(
               invoice = invoice,
-              customerShopName = customer?.shopName ?: "Shop #${invoice.customerId}",
-              onClick = { selectedInvoiceDetail = invoice }
+              customerShopName = invoice.partyNameSnapshot.ifBlank { customer?.shopName ?: "Shop #${invoice.customerId}" },
+              onClick = {
+                showEditDetailDialog = false
+                showReturnDetailDialog = false
+                showCancelDetailDialog = false
+                viewModel.loadSalesDetail(invoice.id)
+              }
             )
           }
         }
@@ -386,6 +407,155 @@ fun SalesBillingScreen(
       }
     )
   }
+
+  selectedSalesDetail?.let { detail ->
+    if (!showEditDetailDialog && !showReturnDetailDialog && !showCancelDetailDialog) {
+      SalesInvoiceDetailDialog(
+        detail = detail,
+        onDismiss = { viewModel.dismissSalesDetail() },
+        onEditClick = {
+          editExternalError = null
+          pendingEditCreditOverride = null
+          showEditDetailDialog = true
+        },
+        onReturnClick = { showReturnDetailDialog = true },
+        onCancelClick = { showCancelDetailDialog = true },
+        onShareClick = {
+          try {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+              type = "text/plain"
+              putExtra(Intent.EXTRA_SUBJECT, "Sales Invoice #${detail.invoice.invoiceNumber}")
+              putExtra(Intent.EXTRA_TEXT, viewModel.formatSalesInvoiceSummary(detail))
+            }
+            context.startActivity(Intent.createChooser(intent, "Share Sales Invoice"))
+          } catch (_: Exception) {
+            scope.launch { snackbarHostState.showSnackbar("No app available to share invoice text.") }
+          }
+        }
+      )
+    }
+
+    if (showEditDetailDialog) {
+      EditSalesInvoiceDialog(
+        detail = detail,
+        customers = allCustomers.ifEmpty { customers },
+        products = allProducts.ifEmpty { products },
+        isSubmitting = isSubmitting,
+        externalError = editExternalError,
+        onClearExternalError = {
+          editExternalError = null
+          pendingEditCreditOverride = null
+        },
+        onGetProductUnit = { productId -> viewModel.getProductUnit(productId) },
+        onDismiss = {
+          pendingEditCreditOverride = null
+          editExternalError = null
+          showEditDetailDialog = false
+        },
+        onSubmit = { req, onErr ->
+          editExternalError = null
+          viewModel.editSalesInvoice(
+            request = req,
+            onCreditLimitExceeded = { assessment ->
+              pendingEditCreditOverride = req to assessment
+            },
+            onSuccess = {
+              pendingEditCreditOverride = null
+              editExternalError = null
+              showEditDetailDialog = false
+              scope.launch { snackbarHostState.showSnackbar("Invoice #${detail.invoice.invoiceNumber} updated.") }
+            },
+            onError = onErr
+          )
+        }
+      )
+    }
+
+    if (showReturnDetailDialog) {
+      SalesReturnDialog(
+        detail = detail,
+        isSubmitting = isSubmitting,
+        onDismiss = { showReturnDetailDialog = false },
+        onSubmit = { lines, settlement, method, reason, notes, onErr ->
+          viewModel.createSalesReturn(
+            salesInvoiceId = detail.invoice.id,
+            lines = lines,
+            settlementType = settlement,
+            refundPaymentMethod = method,
+            reason = reason,
+            notes = notes,
+            onSuccess = {
+              showReturnDetailDialog = false
+              scope.launch { snackbarHostState.showSnackbar("Sales return recorded cleanly.") }
+            },
+            onError = onErr
+          )
+        }
+      )
+    }
+
+    if (showCancelDetailDialog) {
+      CancelInvoiceDialog(
+        invoiceNumber = detail.invoice.invoiceNumber,
+        paidAmountPaise = detail.invoice.paidAmountPaise,
+        partyLabel = detail.invoice.partyNameSnapshot.ifBlank { detail.customer?.shopName ?: "Customer" },
+        isSubmitting = isSubmitting,
+        onDismiss = { showCancelDetailDialog = false },
+        onConfirm = { reason, mode, onErr ->
+          viewModel.cancelSalesInvoice(
+            invoiceId = detail.invoice.id,
+            reason = reason,
+            paymentMode = mode,
+            onSuccess = {
+              showCancelDetailDialog = false
+              scope.launch { snackbarHostState.showSnackbar("Invoice #${detail.invoice.invoiceNumber} cancelled.") }
+            },
+            onError = onErr
+          )
+        }
+      )
+    }
+  }
+
+  pendingEditCreditOverride?.let { (req, assessment) ->
+    val custName = allCustomers.find { it.id == req.customerId }?.shopName ?: "Customer #${req.customerId}"
+    AlertDialog(
+      onDismissRequest = { pendingEditCreditOverride = null },
+      title = { Text("Credit Limit Exceeded on Edit", fontWeight = FontWeight.Bold, color = FigmaRed) },
+      text = {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          Text("Shop: $custName", fontWeight = FontWeight.SemiBold, color = FigmaInk)
+          Text("Credit Limit: ${SubledgerCalculationEngine.formatPaise(assessment.creditLimitPaise)}", fontSize = 13.sp, color = FigmaInk)
+          Text("Projected Balance: ${SubledgerCalculationEngine.formatPaise(assessment.projectedBalancePaise)}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = FigmaRed)
+          Text("Exceeded by ${SubledgerCalculationEngine.formatPaise(assessment.exceededByPaise)}. Override limit and save invoice edits?", fontSize = 12.sp, color = FigmaMuted)
+        }
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            viewModel.editSalesInvoice(
+              request = req.copy(allowCreditLimitOverride = true),
+              onSuccess = {
+                pendingEditCreditOverride = null
+                editExternalError = null
+                showEditDetailDialog = false
+                scope.launch { snackbarHostState.showSnackbar("Invoice updated with credit limit override.") }
+              },
+              onError = { err ->
+                pendingEditCreditOverride = null
+                editExternalError = err
+              }
+            )
+          },
+          enabled = !isSubmitting,
+          colors = ButtonDefaults.buttonColors(containerColor = FigmaRed, contentColor = FigmaWhite)
+        ) { Text("Override & Save") }
+      },
+      dismissButton = {
+        TextButton(onClick = { pendingEditCreditOverride = null }) { Text("Cancel", color = FigmaMuted) }
+      }
+    )
+  }
 }
 
 @Composable
@@ -431,20 +601,25 @@ fun SalesInvoiceCard(
           )
         }
 
+        val isCancelled = invoice.invoiceStatus == InvoiceStatus.CANCELLED
         Surface(
           shape = RoundedCornerShape(6.dp),
-          color = when (invoice.paymentStatus) {
+          color = if (isCancelled) {
+            FigmaRed.copy(alpha = 0.14f)
+          } else when (invoice.paymentStatus) {
             PaymentStatus.PAID -> FigmaSoftTeal
             PaymentStatus.PARTIALLY_PAID -> FigmaAmber.copy(alpha = 0.15f)
             PaymentStatus.UNPAID -> FigmaRed.copy(alpha = 0.12f)
           }
         ) {
           Text(
-            text = invoice.paymentStatus.displayName,
+            text = if (isCancelled) "Cancelled" else invoice.paymentStatus.displayName,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
-            color = when (invoice.paymentStatus) {
+            color = if (isCancelled) {
+              FigmaRed
+            } else when (invoice.paymentStatus) {
               PaymentStatus.PAID -> FigmaTeal
               PaymentStatus.PARTIALLY_PAID -> FigmaAmber
               PaymentStatus.UNPAID -> FigmaRed
@@ -544,6 +719,10 @@ fun CreateSalesInvoiceDialog(
 
   AlertDialog(
     onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false),
+    modifier = Modifier
+      .fillMaxWidth(0.92f)
+      .widthIn(max = 520.dp),
     title = { Text(text = "New Sales Invoice", fontWeight = FontWeight.Bold, color = FigmaInk) },
     text = {
       Column(
@@ -635,7 +814,7 @@ fun CreateSalesInvoiceDialog(
             verticalAlignment = Alignment.CenterVertically
           ) {
             Text(
-              text = "${prod.name} (Default: ₹${prod.defaultSellingPricePaise / 100.0})",
+              text = "${prod.name} (Default: ${SubledgerCalculationEngine.formatPaise(prod.defaultSellingPricePaise)})",
               fontSize = 12.sp,
               fontWeight = if (selectedProductId == prod.id) FontWeight.Bold else FontWeight.Normal,
               color = FigmaInk
@@ -907,6 +1086,10 @@ fun ReceiveCustomerPaymentDialog(
 
   AlertDialog(
     onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false),
+    modifier = Modifier
+      .fillMaxWidth(0.92f)
+      .widthIn(max = 520.dp),
     title = { Text("Receive Customer Payment", fontWeight = FontWeight.Bold, color = FigmaInk) },
     text = {
       Column(

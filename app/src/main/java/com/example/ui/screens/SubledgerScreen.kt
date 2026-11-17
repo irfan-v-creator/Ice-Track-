@@ -34,10 +34,21 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import com.example.data.repository.SubledgerRepository
 import com.example.domain.engine.SubledgerCalculationEngine
+import com.example.domain.model.AdvanceReversalStrategy
 import com.example.domain.model.PartyType
 import com.example.domain.model.SubledgerEntry
+import com.example.domain.model.SubledgerEntryType
 import com.example.ui.components.CurrencyText
 import com.example.ui.components.EmptyStateView
 import com.example.ui.theme.FigmaAmber
@@ -46,22 +57,32 @@ import com.example.ui.theme.FigmaInk
 import com.example.ui.theme.FigmaLine
 import com.example.ui.theme.FigmaMuted
 import com.example.ui.theme.FigmaNavy
+import com.example.ui.theme.FigmaRed
 import com.example.ui.theme.FigmaSoftTeal
 import com.example.ui.theme.FigmaTeal
 import com.example.ui.theme.FigmaWhite
+import com.example.ui.viewmodel.FinanceLifecycleViewModel
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SubledgerScreen(
   subledgerRepository: SubledgerRepository,
   modifier: Modifier = Modifier,
   filteredCustomerId: Long? = null,
   filteredCustomerName: String? = null,
-  onClearCustomerFilter: (() -> Unit)? = null
+  onClearCustomerFilter: (() -> Unit)? = null,
+  financeViewModel: FinanceLifecycleViewModel? = null,
+  onOpenNotesAndAudit: (() -> Unit)? = null
 ) {
   val entries by subledgerRepository.allEntries.collectAsState(initial = emptyList())
   var selectedFilter by remember(filteredCustomerId) {
     mutableStateOf(if (filteredCustomerId != null) "CUSTOMER" else "ALL")
   }
+  var entryToReverse by remember { mutableStateOf<SubledgerEntry?>(null) }
+  var reverseError by remember { mutableStateOf<String?>(null) }
+  var reverseReason by remember { mutableStateOf("") }
+  var reverseStrategy by remember { mutableStateOf(AdvanceReversalStrategy.BLOCK_IF_CONSUMED) }
+  val isSubmitting = financeViewModel?.uiState?.collectAsState()?.value?.isSubmitting ?: false
 
   val filteredEntries = entries.filter { entry ->
     if (filteredCustomerId != null) {
@@ -103,13 +124,25 @@ fun SubledgerScreen(
           style = MaterialTheme.typography.bodySmall,
           color = FigmaMuted
         )
+        if (onOpenNotesAndAudit != null) {
+          Spacer(modifier = Modifier.height(8.dp))
+          OutlinedButton(
+            onClick = onOpenNotesAndAudit,
+            modifier = Modifier
+              .fillMaxWidth()
+              .defaultMinSize(minHeight = 48.dp)
+              .testTag("open_notes_refunds_audit_btn")
+          ) {
+            Text("Credit/Debit Notes, Refunds & Audit Log", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = FigmaNavy)
+          }
+        }
       }
     }
 
     Spacer(modifier = Modifier.height(14.dp))
 
     if (filteredCustomerId != null) {
-      val customerBalance = SubledgerCalculationEngine.calculateCustomerBalance(filteredEntries)
+      val customerBalance = SubledgerCalculationEngine.calculateCustomerBalance(filteredEntries.filter { !it.isReversed })
       Surface(
         shape = RoundedCornerShape(10.dp),
         color = FigmaSoftTeal,
@@ -222,22 +255,103 @@ fun SubledgerScreen(
           .testTag("subledger_entry_list")
       ) {
         items(filteredEntries, key = { it.id }) { entry ->
-          SubledgerEntryCard(entry = entry)
+          SubledgerEntryCard(
+            entry = entry,
+            canReversePayment = financeViewModel != null &&
+              entry.entryType == SubledgerEntryType.PAYMENT &&
+              !entry.isReversed,
+            onReverseClick = {
+              reverseReason = ""
+              reverseError = null
+              reverseStrategy = AdvanceReversalStrategy.BLOCK_IF_CONSUMED
+              entryToReverse = entry
+            }
+          )
         }
       }
     }
   }
+
+  entryToReverse?.let { target ->
+    AlertDialog(
+      onDismissRequest = { entryToReverse = null },
+      title = { Text("Reverse Payment #${target.id}", fontWeight = FontWeight.Bold, color = FigmaRed) },
+      text = {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          val amtPaise = maxOf(target.debitPaise, target.creditPaise)
+          Text(
+            text = "${if (target.partyType == PartyType.CUSTOMER) "Shop Receipt" else "Supplier Payment"}: ${SubledgerCalculationEngine.formatPaise(amtPaise)}",
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 13.sp,
+            color = FigmaInk
+          )
+          Text("If part of this payment became Advance Credit that was later used:", fontSize = 11.sp, color = FigmaMuted)
+          FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            AdvanceReversalStrategy.values().forEach { strategy ->
+              FilterChip(
+                selected = reverseStrategy == strategy,
+                onClick = { reverseStrategy = strategy },
+                label = { Text(strategy.displayName, fontSize = 10.sp) }
+              )
+            }
+          }
+          OutlinedTextField(
+            value = reverseReason,
+            onValueChange = { reverseReason = it; reverseError = null },
+            label = { Text("Mandatory Reversal Reason *") },
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("reverse_payment_reason_input")
+          )
+          InvoiceErrorBanner(reverseError, "reverse_payment_error")
+        }
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            if (reverseReason.isBlank()) {
+              reverseError = "Mandatory reversal reason is required."
+              return@Button
+            }
+            financeViewModel?.reversePayment(
+              entryId = target.id,
+              reason = reverseReason,
+              strategy = reverseStrategy,
+              onSuccess = { entryToReverse = null },
+              onError = { reverseError = it }
+            )
+          },
+          enabled = !isSubmitting,
+          colors = ButtonDefaults.buttonColors(containerColor = FigmaRed, contentColor = FigmaWhite),
+          modifier = Modifier
+            .defaultMinSize(minHeight = 48.dp)
+            .testTag("confirm_reverse_payment_btn")
+        ) {
+          Text(if (isSubmitting) "Reversing..." else "Reverse Payment")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { entryToReverse = null }) {
+          Text("Cancel", color = FigmaMuted)
+        }
+      }
+    )
+  }
 }
 
 @Composable
-fun SubledgerEntryCard(entry: SubledgerEntry) {
+fun SubledgerEntryCard(
+  entry: SubledgerEntry,
+  canReversePayment: Boolean = false,
+  onReverseClick: () -> Unit = {}
+) {
   Card(
     shape = RoundedCornerShape(12.dp),
-    colors = CardDefaults.cardColors(containerColor = FigmaWhite),
+    colors = CardDefaults.cardColors(containerColor = if (entry.isReversed) FigmaBackground else FigmaWhite),
     elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
     modifier = Modifier
       .fillMaxWidth()
-      .border(1.dp, FigmaLine, RoundedCornerShape(12.dp))
+      .border(1.dp, if (entry.isReversed) FigmaRed.copy(alpha = 0.35f) else FigmaLine, RoundedCornerShape(12.dp))
   ) {
     Column(modifier = Modifier.padding(14.dp)) {
       Row(
@@ -248,13 +362,13 @@ fun SubledgerEntryCard(entry: SubledgerEntry) {
         Row(verticalAlignment = Alignment.CenterVertically) {
           Surface(
             shape = RoundedCornerShape(6.dp),
-            color = FigmaSoftTeal
+            color = if (entry.isReversed) FigmaRed.copy(alpha = 0.12f) else FigmaSoftTeal
           ) {
             Text(
-              text = if (entry.partyType == PartyType.CUSTOMER) "SHOP AR" else "SUPPLIER AP",
+              text = if (entry.isReversed) "REVERSED" else if (entry.partyType == PartyType.CUSTOMER) "SHOP AR" else "SUPPLIER AP",
               style = MaterialTheme.typography.labelSmall,
               fontWeight = FontWeight.Bold,
-              color = FigmaTeal,
+              color = if (entry.isReversed) FigmaRed else FigmaTeal,
               modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
             )
           }
@@ -265,7 +379,7 @@ fun SubledgerEntryCard(entry: SubledgerEntry) {
             text = entry.entryType.displayName,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
-            color = FigmaInk
+            color = if (entry.isReversed) FigmaMuted else FigmaInk
           )
         }
 
@@ -283,11 +397,20 @@ fun SubledgerEntryCard(entry: SubledgerEntry) {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
       ) {
-        Text(
-          text = if (entry.notes.isNotBlank()) entry.notes else "Ref: ${entry.referenceType} #${entry.referenceId}",
-          style = MaterialTheme.typography.bodySmall,
-          color = FigmaMuted
-        )
+        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+          Text(
+            text = if (entry.notes.isNotBlank()) entry.notes else "Ref: ${entry.referenceType} #${entry.referenceId}",
+            style = MaterialTheme.typography.bodySmall,
+            color = FigmaMuted
+          )
+          if (entry.isReversed && !entry.reversalReason.isNullOrBlank()) {
+            Text(
+              text = "Reversed: ${entry.reversalReason}",
+              style = MaterialTheme.typography.labelSmall,
+              color = FigmaRed
+            )
+          }
+        }
 
         Row {
           if (entry.debitPaise > 0L) {
@@ -310,6 +433,19 @@ fun SubledgerEntryCard(entry: SubledgerEntry) {
               CurrencyText(paise = entry.creditPaise, fontSize = 14, isReceivable = false)
             }
           }
+        }
+      }
+
+      if (canReversePayment) {
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedButton(
+          onClick = onReverseClick,
+          modifier = Modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = 48.dp)
+            .testTag("reverse_payment_btn_${entry.id}")
+        ) {
+          Text("Reverse Payment", fontSize = 12.sp, color = FigmaRed, fontWeight = FontWeight.SemiBold)
         }
       }
     }

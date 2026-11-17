@@ -14,12 +14,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.ReceiptLong
@@ -58,6 +61,7 @@ fun MoreScreen(
     modifier = modifier
       .fillMaxSize()
       .background(FigmaBackground)
+      .verticalScroll(rememberScrollState())
       .padding(horizontal = 24.dp, vertical = 16.dp)
       .testTag("more_screen"),
     verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -115,14 +119,21 @@ fun MoreScreen(
 
     MoreMenuItem(
       title = "Transaction Subledger",
-      subtitle = "View immutable AR and AP ledger records",
+      subtitle = "View immutable AR/AP records & reverse payments",
       icon = Icons.Default.AccountBalanceWallet,
       onClick = { onNavigate(Screen.LEDGER) }
     )
 
     MoreMenuItem(
+      title = "Credit/Debit Notes, Refunds & Audit",
+      subtitle = "Issue notes, execute refund payouts & inspect financial audit history",
+      icon = Icons.Default.History,
+      onClick = { onNavigate(Screen.NOTES_REFUNDS_AUDIT) }
+    )
+
+    MoreMenuItem(
       title = "Business Settings",
-      subtitle = "Trading details, reminder configuration status",
+      subtitle = "Trading details, backup & restore, reminder configuration",
       icon = Icons.Default.Settings,
       onClick = { onNavigate(Screen.SETTINGS) }
     )

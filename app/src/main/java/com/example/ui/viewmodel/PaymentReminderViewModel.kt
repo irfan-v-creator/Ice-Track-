@@ -133,7 +133,11 @@ class PaymentReminderViewModel(
       .filter { !it.isReversed && it.partyType == PartyType.CUSTOMER }
       .groupBy { it.partyId }
     val unpaidSalesCountByCustomer = sales
-      .filter { it.paymentStatus != com.example.domain.model.PaymentStatus.PAID && it.balanceDuePaise > 0L }
+      .filter {
+        it.invoiceStatus == com.example.domain.model.InvoiceStatus.ACTIVE &&
+          it.paymentStatus != com.example.domain.model.PaymentStatus.PAID &&
+          it.balanceDuePaise > 0L
+      }
       .groupingBy { it.customerId }
       .eachCount()
 

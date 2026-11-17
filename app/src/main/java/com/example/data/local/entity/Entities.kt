@@ -4,13 +4,23 @@ import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import com.example.domain.model.AuditOperationType
+import com.example.domain.model.CreditDebitNoteType
+import com.example.domain.model.DiscountType
 import com.example.domain.model.ExpenseCategory
+import com.example.domain.model.InvoiceStatus
+import com.example.domain.model.NoteStatus
 import com.example.domain.model.PartyType
 import com.example.domain.model.PaymentAllocationType
 import com.example.domain.model.PaymentMethod
 import com.example.domain.model.PaymentStatus
+import com.example.domain.model.RefundExecutionStatus
+import com.example.domain.model.RefundSourceType
+import com.example.domain.model.ReturnCondition
+import com.example.domain.model.ReturnSettlementType
 import com.example.domain.model.StockMovementType
 import com.example.domain.model.SubledgerEntryType
+import com.example.domain.model.UnitType
 
 @Entity(
   tableName = "products",
@@ -158,7 +168,10 @@ data class SubledgerEntryEntity(
   val entryDate: Long,
   val createdAt: Long = System.currentTimeMillis(),
   val notes: String = "",
-  val isReversed: Boolean = false
+  val isReversed: Boolean = false,
+  val operationRef: String = "",
+  val reversedAt: Long? = null,
+  val reversalReason: String? = null
 )
 
 @Entity(
@@ -180,7 +193,10 @@ data class PaymentAllocationEntity(
   val allocatedAmountPaise: Long,
   val allocatedAt: Long = System.currentTimeMillis(),
   val notes: String = "",
-  val isReversed: Boolean = false
+  val isReversed: Boolean = false,
+  val isFromAdvanceConsumption: Boolean = false,
+  val reversedAt: Long? = null,
+  val reversalReason: String? = null
 )
 
 @Entity(tableName = "app_settings")
@@ -203,7 +219,7 @@ data class AppSettingEntity(
       onDelete = ForeignKey.RESTRICT
     )
   ],
-  indices = [Index("productId"), Index("expiryDate"), Index("purchaseDate")]
+  indices = [Index("productId"), Index("expiryDate"), Index("purchaseDate"), Index("purchaseInvoiceId")]
 )
 data class ProductBatchEntity(
   @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -269,7 +285,20 @@ data class PurchaseInvoiceEntity(
   val paymentMethod: PaymentMethod? = null,
   val notes: String = "",
   val isConfirmed: Boolean = true,
-  val createdAt: Long = System.currentTimeMillis()
+  val createdAt: Long = System.currentTimeMillis(),
+  val subtotalPaise: Long = totalAmountPaise,
+  val discountType: DiscountType = DiscountType.NONE,
+  val discountValueRaw: Long = 0L,
+  val discountAmountPaise: Long = 0L,
+  val additionalChargesPaise: Long = 0L,
+  val invoiceStatus: InvoiceStatus = InvoiceStatus.ACTIVE,
+  val cancelledAt: Long? = null,
+  val cancellationReason: String? = null,
+  val revisionVersion: Int = 1,
+  val updatedAt: Long = createdAt,
+  val partyNameSnapshot: String = "",
+  val partyPhoneSnapshot: String = "",
+  val partyAddressSnapshot: String = ""
 )
 
 @Entity(
@@ -298,7 +327,12 @@ data class PurchaseInvoiceItemEntity(
   val expiryDate: Long,
   val quantityPieces: Int,
   val costPerPiecePaise: Long,
-  val lineTotalPaise: Long
+  val lineTotalPaise: Long,
+  val productNameSnapshot: String = "",
+  val unitType: UnitType = UnitType.PIECE,
+  val unitQuantity: Int = quantityPieces,
+  val unitRatePaise: Long = costPerPiecePaise,
+  val itemDiscountPaise: Long = 0L
 )
 
 @Entity(
@@ -325,7 +359,20 @@ data class SalesInvoiceEntity(
   val paymentMethod: PaymentMethod? = null,
   val notes: String = "",
   val isConfirmed: Boolean = true,
-  val createdAt: Long = System.currentTimeMillis()
+  val createdAt: Long = System.currentTimeMillis(),
+  val subtotalPaise: Long = totalAmountPaise,
+  val discountType: DiscountType = DiscountType.NONE,
+  val discountValueRaw: Long = 0L,
+  val discountAmountPaise: Long = 0L,
+  val additionalChargesPaise: Long = 0L,
+  val invoiceStatus: InvoiceStatus = InvoiceStatus.ACTIVE,
+  val cancelledAt: Long? = null,
+  val cancellationReason: String? = null,
+  val revisionVersion: Int = 1,
+  val updatedAt: Long = createdAt,
+  val partyNameSnapshot: String = "",
+  val partyPhoneSnapshot: String = "",
+  val partyAddressSnapshot: String = ""
 )
 
 @Entity(
@@ -353,7 +400,12 @@ data class SalesInvoiceItemEntity(
   val batchId: Long,
   val quantityPieces: Int,
   val unitPricePaise: Long,
-  val lineTotalPaise: Long
+  val lineTotalPaise: Long,
+  val productNameSnapshot: String = "",
+  val unitType: UnitType = UnitType.PIECE,
+  val unitQuantity: Int = quantityPieces,
+  val unitRatePaise: Long = unitPricePaise,
+  val itemDiscountPaise: Long = 0L
 )
 
 @Entity(
@@ -438,4 +490,243 @@ data class CustomerPaymentReminderInvoiceEntity(
   val totalAmountPaiseSnapshot: Long,
   val pendingAmountPaiseSnapshot: Long
 )
+
+// ==========================================
+// Phase 3 Entities: Returns, Credit/Debit Notes, Refunds & Immutable Audit Logs
+// ==========================================
+
+@Entity(
+  tableName = "sales_returns",
+  foreignKeys = [
+    ForeignKey(
+      entity = SalesInvoiceEntity::class,
+      parentColumns = ["id"],
+      childColumns = ["salesInvoiceId"],
+      onDelete = ForeignKey.RESTRICT
+    ),
+    ForeignKey(
+      entity = CustomerEntity::class,
+      parentColumns = ["id"],
+      childColumns = ["customerId"],
+      onDelete = ForeignKey.RESTRICT
+    )
+  ],
+  indices = [
+    Index("returnNumber", unique = true),
+    Index("salesInvoiceId"),
+    Index("customerId"),
+    Index("returnDate"),
+    Index("idempotencyKey", unique = true)
+  ]
+)
+data class SalesReturnEntity(
+  @PrimaryKey(autoGenerate = true) val id: Long = 0,
+  val returnNumber: String,
+  val salesInvoiceId: Long,
+  val customerId: Long,
+  val returnDate: Long,
+  val totalReturnAmountPaise: Long,
+  val settlementType: ReturnSettlementType,
+  val creditNoteId: Long? = null,
+  val refundRecordId: Long? = null,
+  val subledgerEntryId: Long? = null,
+  val reason: String,
+  val notes: String = "",
+  val idempotencyKey: String? = null,
+  val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(
+  tableName = "sales_return_items",
+  foreignKeys = [
+    ForeignKey(
+      entity = SalesReturnEntity::class,
+      parentColumns = ["id"],
+      childColumns = ["salesReturnId"],
+      onDelete = ForeignKey.CASCADE
+    ),
+    ForeignKey(
+      entity = ProductEntity::class,
+      parentColumns = ["id"],
+      childColumns = ["productId"],
+      onDelete = ForeignKey.RESTRICT
+    )
+  ],
+  indices = [Index("salesReturnId"), Index("productId"), Index("batchId")]
+)
+data class SalesReturnItemEntity(
+  @PrimaryKey(autoGenerate = true) val id: Long = 0,
+  val salesReturnId: Long,
+  val originalSalesInvoiceItemId: Long? = null,
+  val productId: Long,
+  val batchId: Long,
+  val productNameSnapshot: String = "",
+  val quantityPieces: Int,
+  val unitPricePaise: Long,
+  val lineTotalPaise: Long,
+  val condition: ReturnCondition,
+  val restoredToSaleableStock: Boolean
+)
+
+@Entity(
+  tableName = "purchase_returns",
+  foreignKeys = [
+    ForeignKey(
+      entity = PurchaseInvoiceEntity::class,
+      parentColumns = ["id"],
+      childColumns = ["purchaseInvoiceId"],
+      onDelete = ForeignKey.RESTRICT
+    ),
+    ForeignKey(
+      entity = SupplierEntity::class,
+      parentColumns = ["id"],
+      childColumns = ["supplierId"],
+      onDelete = ForeignKey.RESTRICT
+    )
+  ],
+  indices = [
+    Index("returnNumber", unique = true),
+    Index("purchaseInvoiceId"),
+    Index("supplierId"),
+    Index("returnDate"),
+    Index("idempotencyKey", unique = true)
+  ]
+)
+data class PurchaseReturnEntity(
+  @PrimaryKey(autoGenerate = true) val id: Long = 0,
+  val returnNumber: String,
+  val purchaseInvoiceId: Long,
+  val supplierId: Long,
+  val returnDate: Long,
+  val totalReturnAmountPaise: Long,
+  val settlementType: ReturnSettlementType,
+  val debitNoteId: Long? = null,
+  val refundRecordId: Long? = null,
+  val subledgerEntryId: Long? = null,
+  val reason: String,
+  val notes: String = "",
+  val idempotencyKey: String? = null,
+  val createdAt: Long = System.currentTimeMillis()
+)
+
+@Entity(
+  tableName = "purchase_return_items",
+  foreignKeys = [
+    ForeignKey(
+      entity = PurchaseReturnEntity::class,
+      parentColumns = ["id"],
+      childColumns = ["purchaseReturnId"],
+      onDelete = ForeignKey.CASCADE
+    ),
+    ForeignKey(
+      entity = ProductEntity::class,
+      parentColumns = ["id"],
+      childColumns = ["productId"],
+      onDelete = ForeignKey.RESTRICT
+    ),
+    ForeignKey(
+      entity = ProductBatchEntity::class,
+      parentColumns = ["id"],
+      childColumns = ["batchId"],
+      onDelete = ForeignKey.RESTRICT
+    )
+  ],
+  indices = [Index("purchaseReturnId"), Index("productId"), Index("batchId")]
+)
+data class PurchaseReturnItemEntity(
+  @PrimaryKey(autoGenerate = true) val id: Long = 0,
+  val purchaseReturnId: Long,
+  val originalPurchaseInvoiceItemId: Long? = null,
+  val productId: Long,
+  val batchId: Long,
+  val productNameSnapshot: String = "",
+  val batchNumberSnapshot: String = "",
+  val quantityPieces: Int,
+  val costPerPiecePaise: Long,
+  val lineTotalPaise: Long,
+  val condition: ReturnCondition
+)
+
+@Entity(
+  tableName = "credit_debit_notes",
+  indices = [
+    Index("noteNumber", unique = true),
+    Index(value = ["partyType", "partyId"]),
+    Index("linkedInvoiceId"),
+    Index("linkedReturnId"),
+    Index("issueDate"),
+    Index("idempotencyKey", unique = true)
+  ]
+)
+data class CreditDebitNoteEntity(
+  @PrimaryKey(autoGenerate = true) val id: Long = 0,
+  val noteNumber: String,
+  val noteType: CreditDebitNoteType,
+  val partyType: PartyType,
+  val partyId: Long,
+  val linkedInvoiceId: Long? = null,
+  val linkedReturnId: Long? = null,
+  val subledgerEntryId: Long? = null,
+  val amountPaise: Long,
+  val appliedAmountPaise: Long = 0L,
+  val status: NoteStatus = NoteStatus.OPEN,
+  val issueDate: Long,
+  val reason: String,
+  val notes: String = "",
+  val idempotencyKey: String? = null,
+  val createdAt: Long = System.currentTimeMillis(),
+  val updatedAt: Long = System.currentTimeMillis()
+)
+
+@Entity(
+  tableName = "refund_records",
+  indices = [
+    Index(value = ["partyType", "partyId"]),
+    Index(value = ["sourceType", "sourceId"]),
+    Index("executionStatus"),
+    Index("idempotencyKey", unique = true)
+  ]
+)
+data class RefundRecordEntity(
+  @PrimaryKey(autoGenerate = true) val id: Long = 0,
+  val partyType: PartyType,
+  val partyId: Long,
+  val sourceType: RefundSourceType,
+  val sourceId: Long,
+  val amountPaise: Long,
+  val paymentMethod: PaymentMethod,
+  val executionStatus: RefundExecutionStatus = RefundExecutionStatus.RECORDED_PENDING_PAYOUT,
+  val reason: String,
+  val notes: String = "",
+  val referenceNumber: String = "",
+  val subledgerEntryId: Long? = null,
+  val recordedAt: Long = System.currentTimeMillis(),
+  val executedAt: Long? = null,
+  val idempotencyKey: String? = null
+)
+
+@Entity(
+  tableName = "financial_audit_logs",
+  indices = [
+    Index("operationType"),
+    Index(value = ["entityType", "entityId"]),
+    Index(value = ["relatedPartyType", "relatedPartyId"]),
+    Index("createdAt")
+  ]
+)
+data class FinancialAuditLogEntity(
+  @PrimaryKey(autoGenerate = true) val id: Long = 0,
+  val operationType: AuditOperationType,
+  val entityType: String,
+  val entityId: Long,
+  val relatedPartyType: PartyType? = null,
+  val relatedPartyId: Long? = null,
+  val actorLabel: String = "Owner",
+  val reason: String,
+  val beforeJson: String = "",
+  val afterJson: String = "",
+  val operationReference: String = "",
+  val createdAt: Long = System.currentTimeMillis()
+)
+
 

@@ -98,7 +98,9 @@ class Phase2UiFixesTest {
 
     composeTestRule.setContent {
       IceTrackTheme {
-        PurchaseManagementScreen(viewModel = purchaseVm)
+        Box(modifier = Modifier.width(411.dp).height(900.dp)) {
+          PurchaseManagementScreen(viewModel = purchaseVm)
+        }
       }
     }
     composeTestRule.waitUntil(timeoutMillis = 5000) {
@@ -225,12 +227,6 @@ class Phase2UiFixesTest {
         listOf(PurchaseInvoiceItem(productId = prodId, batchNumber = "BC-1", expiryDate = now + 90 * dayMs, quantityPieces = 10, costPerPiecePaise = 1000L, lineTotalPaise = 10000L)),
         0L, null, ""
       )
-      // Pre-create an invoice INV-DUP-001 so overriding with duplicate invoice # fails on step 2
-      salesRepo.createSalesInvoice(
-        custId, "INV-DUP-001", now, 0L,
-        listOf(SalesRepository.RequestedSaleLine(prodId, 1, 2000L)),
-        2000L, PaymentMethod.CASH, ""
-      )
     }
 
     val salesVm = SalesViewModel(salesRepo, customerRepo, productRepo, inventoryRepo, subledgerRepo)
@@ -266,6 +262,19 @@ class Phase2UiFixesTest {
       } catch (_: AssertionError) {
         false
       }
+    }
+    // Insert INV-DUP-001 before confirming override so step 2 fails on duplicate invoice #
+    runBlocking {
+      salesRepo.createSalesInvoice(
+        salesVm.customers.value.first().id,
+        "INV-DUP-001",
+        now,
+        0L,
+        listOf(SalesRepository.RequestedSaleLine(salesVm.products.value.first().id, 1, 2000L)),
+        2000L,
+        PaymentMethod.CASH,
+        ""
+      )
     }
     composeTestRule.onNodeWithTag("confirm_sale_credit_override_btn").performClick()
 
@@ -303,12 +312,6 @@ class Phase2UiFixesTest {
       val supId = supplierRepo.saveSupplier(
         Supplier(name = "Capped Supplier", contactPerson = "", phoneNumber = "", address = "", creditLimitPaise = 5000L)
       )
-      // Pre-create PUR-DUP-001 so override fails on duplicate invoice #
-      purchaseRepo.createPurchaseInvoice(
-        supId, "PUR-DUP-001", now, 0L,
-        listOf(PurchaseInvoiceItem(productId = prodId, batchNumber = "BP-1", expiryDate = now + 90 * dayMs, quantityPieces = 1, costPerPiecePaise = 1000L, lineTotalPaise = 1000L)),
-        1000L, PaymentMethod.CASH, ""
-      )
     }
 
     val purchaseVm = PurchaseViewModel(purchaseRepo, supplierRepo, productRepo, subledgerRepo)
@@ -342,6 +345,19 @@ class Phase2UiFixesTest {
       } catch (_: AssertionError) {
         false
       }
+    }
+    // Insert PUR-DUP-001 before confirming override so step 2 fails on duplicate invoice #
+    runBlocking {
+      purchaseRepo.createPurchaseInvoice(
+        purchaseVm.suppliers.value.first().id,
+        "PUR-DUP-001",
+        now,
+        0L,
+        listOf(PurchaseInvoiceItem(productId = purchaseVm.products.value.first().id, batchNumber = "BP-1", expiryDate = now + 90 * dayMs, quantityPieces = 1, costPerPiecePaise = 1000L, lineTotalPaise = 1000L)),
+        1000L,
+        PaymentMethod.CASH,
+        ""
+      )
     }
     composeTestRule.onNodeWithTag("confirm_purchase_credit_override_btn").performClick()
 

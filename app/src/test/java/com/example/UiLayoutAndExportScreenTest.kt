@@ -15,9 +15,14 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelStore
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.IceTrackDatabase
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import com.example.data.repository.CustomerRepository
 import com.example.data.repository.ExpenseRepository
 import com.example.data.repository.InventoryRepository
@@ -50,6 +55,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.ExternalResource
+import org.junit.rules.RuleChain
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
@@ -59,23 +66,38 @@ import org.robolectric.shadows.ShadowLooper
 @Config(sdk = [36], qualifiers = "w411dp-h915dp-xhdpi")
 class UiLayoutAndExportScreenTest {
 
-  @get:Rule
-  val composeTestRule = createComposeRule()
+  private val composeTestRule = createComposeRule()
+  private val viewModelStore = ViewModelStore()
+  private lateinit var queryExecutor: ExecutorService
 
   private lateinit var context: Context
   private lateinit var db: IceTrackDatabase
 
-  @Before
-  fun setup() {
-    context = ApplicationProvider.getApplicationContext()
-    db = Room.inMemoryDatabaseBuilder(context, IceTrackDatabase::class.java)
-      .allowMainThreadQueries()
-      .build()
-  }
+  @get:Rule
+  val ruleChain: RuleChain = RuleChain
+    .outerRule(object : ExternalResource() {
+      override fun before() {
+        context = ApplicationProvider.getApplicationContext()
+        queryExecutor = Executors.newFixedThreadPool(2)
+        db = Room.inMemoryDatabaseBuilder(context, IceTrackDatabase::class.java)
+          .allowMainThreadQueries()
+          .setQueryExecutor(queryExecutor)
+          .build()
+      }
 
-  @After
-  fun tearDown() {
-    db.close()
+      override fun after() {
+        viewModelStore.clear()
+        ShadowLooper.idleMainLooper()
+        queryExecutor.shutdown()
+        queryExecutor.awaitTermination(5, TimeUnit.SECONDS)
+        db.close()
+      }
+    })
+    .around(composeTestRule)
+
+  private fun <T : ViewModel> trackVm(vm: T): T {
+    viewModelStore.put(vm::class.java.name + "@" + System.identityHashCode(vm), vm)
+    return vm
   }
 
   private fun assertSingleLineNoOverflow(text: String) {
@@ -99,10 +121,12 @@ class UiLayoutAndExportScreenTest {
   @Test
   @Config(qualifiers = "w320dp-h640dp-mdpi")
   fun purchaseScreen_paySupplierButton_rendersHorizontallyOnNarrowWidth() {
-    val purchaseVm = PurchaseViewModel(
-      purchaseRepo = PurchaseRepository(db),
-      supplierRepo = SupplierRepository(db),
-      productRepo = ProductRepository(db)
+    val purchaseVm = trackVm(
+      PurchaseViewModel(
+        purchaseRepo = PurchaseRepository(db),
+        supplierRepo = SupplierRepository(db),
+        productRepo = ProductRepository(db)
+      )
     )
 
     composeTestRule.setContent {
@@ -127,10 +151,12 @@ class UiLayoutAndExportScreenTest {
 
   @Test
   fun purchaseScreen_paySupplierButton_rendersHorizontallyOnStandardWidth() {
-    val purchaseVm = PurchaseViewModel(
-      purchaseRepo = PurchaseRepository(db),
-      supplierRepo = SupplierRepository(db),
-      productRepo = ProductRepository(db)
+    val purchaseVm = trackVm(
+      PurchaseViewModel(
+        purchaseRepo = PurchaseRepository(db),
+        supplierRepo = SupplierRepository(db),
+        productRepo = ProductRepository(db)
+      )
     )
 
     composeTestRule.setContent {
@@ -155,11 +181,13 @@ class UiLayoutAndExportScreenTest {
   @Test
   @Config(qualifiers = "w320dp-h640dp-mdpi")
   fun salesScreen_receivePaymentButton_rendersHorizontallyOnNarrowWidth() {
-    val salesVm = SalesViewModel(
-      salesRepo = SalesRepository(db),
-      customerRepo = CustomerRepository(db),
-      productRepo = ProductRepository(db),
-      inventoryRepo = InventoryRepository(db)
+    val salesVm = trackVm(
+      SalesViewModel(
+        salesRepo = SalesRepository(db),
+        customerRepo = CustomerRepository(db),
+        productRepo = ProductRepository(db),
+        inventoryRepo = InventoryRepository(db)
+      )
     )
 
     composeTestRule.setContent {
@@ -273,15 +301,17 @@ class UiLayoutAndExportScreenTest {
       )
     }
 
-    val reportsVm = ReportsViewModel(
-      salesRepo = salesRepo,
-      purchaseRepo = purchaseRepo,
-      productRepo = productRepo,
-      customerRepo = customerRepo,
-      supplierRepo = supplierRepo,
-      inventoryRepo = inventoryRepo,
-      expenseRepo = expenseRepo,
-      subledgerRepo = subledgerRepo
+    val reportsVm = trackVm(
+      ReportsViewModel(
+        salesRepo = salesRepo,
+        purchaseRepo = purchaseRepo,
+        productRepo = productRepo,
+        customerRepo = customerRepo,
+        supplierRepo = supplierRepo,
+        inventoryRepo = inventoryRepo,
+        expenseRepo = expenseRepo,
+        subledgerRepo = subledgerRepo
+      )
     )
 
     composeTestRule.setContent {

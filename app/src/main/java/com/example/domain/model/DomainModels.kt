@@ -92,7 +92,10 @@ data class SubledgerEntry(
   val entryDate: Long,
   val createdAt: Long = System.currentTimeMillis(),
   val notes: String = "",
-  val isReversed: Boolean = false
+  val isReversed: Boolean = false,
+  val operationRef: String = "",
+  val reversedAt: Long? = null,
+  val reversalReason: String? = null
 )
 
 data class PaymentAllocation(
@@ -105,7 +108,10 @@ data class PaymentAllocation(
   val allocatedAmountPaise: Long,
   val allocatedAt: Long = System.currentTimeMillis(),
   val notes: String = "",
-  val isReversed: Boolean = false
+  val isReversed: Boolean = false,
+  val isFromAdvanceConsumption: Boolean = false,
+  val reversedAt: Long? = null,
+  val reversalReason: String? = null
 )
 
 data class AppSetting(
@@ -157,9 +163,23 @@ data class PurchaseInvoice(
   val paymentMethod: PaymentMethod? = null,
   val notes: String = "",
   val isConfirmed: Boolean = true,
-  val createdAt: Long = System.currentTimeMillis()
+  val createdAt: Long = System.currentTimeMillis(),
+  val subtotalPaise: Long = totalAmountPaise,
+  val discountType: DiscountType = DiscountType.NONE,
+  val discountValueRaw: Long = 0L,
+  val discountAmountPaise: Long = 0L,
+  val additionalChargesPaise: Long = 0L,
+  val invoiceStatus: InvoiceStatus = InvoiceStatus.ACTIVE,
+  val cancelledAt: Long? = null,
+  val cancellationReason: String? = null,
+  val revisionVersion: Int = 1,
+  val updatedAt: Long = createdAt,
+  val partyNameSnapshot: String = "",
+  val partyPhoneSnapshot: String = "",
+  val partyAddressSnapshot: String = ""
 ) {
-  val balanceDuePaise: Long get() = (totalAmountPaise - paidAmountPaise).coerceAtLeast(0L)
+  val balanceDuePaise: Long
+    get() = if (invoiceStatus == InvoiceStatus.CANCELLED) 0L else (totalAmountPaise - paidAmountPaise).coerceAtLeast(0L)
 }
 
 data class PurchaseInvoiceItem(
@@ -170,7 +190,12 @@ data class PurchaseInvoiceItem(
   val expiryDate: Long,
   val quantityPieces: Int,
   val costPerPiecePaise: Long,
-  val lineTotalPaise: Long
+  val lineTotalPaise: Long,
+  val productNameSnapshot: String = "",
+  val unitType: UnitType = UnitType.PIECE,
+  val unitQuantity: Int = quantityPieces,
+  val unitRatePaise: Long = costPerPiecePaise,
+  val itemDiscountPaise: Long = 0L
 )
 
 data class SalesInvoice(
@@ -185,9 +210,23 @@ data class SalesInvoice(
   val paymentMethod: PaymentMethod? = null,
   val notes: String = "",
   val isConfirmed: Boolean = true,
-  val createdAt: Long = System.currentTimeMillis()
+  val createdAt: Long = System.currentTimeMillis(),
+  val subtotalPaise: Long = totalAmountPaise,
+  val discountType: DiscountType = DiscountType.NONE,
+  val discountValueRaw: Long = 0L,
+  val discountAmountPaise: Long = 0L,
+  val additionalChargesPaise: Long = 0L,
+  val invoiceStatus: InvoiceStatus = InvoiceStatus.ACTIVE,
+  val cancelledAt: Long? = null,
+  val cancellationReason: String? = null,
+  val revisionVersion: Int = 1,
+  val updatedAt: Long = createdAt,
+  val partyNameSnapshot: String = "",
+  val partyPhoneSnapshot: String = "",
+  val partyAddressSnapshot: String = ""
 ) {
-  val balanceDuePaise: Long get() = (totalAmountPaise - paidAmountPaise).coerceAtLeast(0L)
+  val balanceDuePaise: Long
+    get() = if (invoiceStatus == InvoiceStatus.CANCELLED) 0L else (totalAmountPaise - paidAmountPaise).coerceAtLeast(0L)
 }
 
 data class SalesInvoiceItem(
@@ -197,7 +236,12 @@ data class SalesInvoiceItem(
   val batchId: Long,
   val quantityPieces: Int,
   val unitPricePaise: Long,
-  val lineTotalPaise: Long
+  val lineTotalPaise: Long,
+  val productNameSnapshot: String = "",
+  val unitType: UnitType = UnitType.PIECE,
+  val unitQuantity: Int = quantityPieces,
+  val unitRatePaise: Long = unitPricePaise,
+  val itemDiscountPaise: Long = 0L
 )
 
 data class Expense(
@@ -240,4 +284,154 @@ data class CustomerPaymentReminderInvoice(
   val totalAmountPaiseSnapshot: Long,
   val pendingAmountPaiseSnapshot: Long
 )
+
+// ==========================================
+// Phase 3 Domain Models
+// ==========================================
+
+data class SalesReturn(
+  val id: Long = 0,
+  val returnNumber: String,
+  val salesInvoiceId: Long,
+  val customerId: Long,
+  val returnDate: Long,
+  val totalReturnAmountPaise: Long,
+  val settlementType: ReturnSettlementType,
+  val creditNoteId: Long? = null,
+  val refundRecordId: Long? = null,
+  val subledgerEntryId: Long? = null,
+  val reason: String,
+  val notes: String = "",
+  val idempotencyKey: String? = null,
+  val createdAt: Long = System.currentTimeMillis()
+)
+
+data class SalesReturnItem(
+  val id: Long = 0,
+  val salesReturnId: Long = 0,
+  val originalSalesInvoiceItemId: Long? = null,
+  val productId: Long,
+  val batchId: Long,
+  val productNameSnapshot: String = "",
+  val quantityPieces: Int,
+  val unitPricePaise: Long,
+  val lineTotalPaise: Long,
+  val condition: ReturnCondition,
+  val restoredToSaleableStock: Boolean
+)
+
+data class PurchaseReturn(
+  val id: Long = 0,
+  val returnNumber: String,
+  val purchaseInvoiceId: Long,
+  val supplierId: Long,
+  val returnDate: Long,
+  val totalReturnAmountPaise: Long,
+  val settlementType: ReturnSettlementType,
+  val debitNoteId: Long? = null,
+  val refundRecordId: Long? = null,
+  val subledgerEntryId: Long? = null,
+  val reason: String,
+  val notes: String = "",
+  val idempotencyKey: String? = null,
+  val createdAt: Long = System.currentTimeMillis()
+)
+
+data class PurchaseReturnItem(
+  val id: Long = 0,
+  val purchaseReturnId: Long = 0,
+  val originalPurchaseInvoiceItemId: Long? = null,
+  val productId: Long,
+  val batchId: Long,
+  val productNameSnapshot: String = "",
+  val batchNumberSnapshot: String = "",
+  val quantityPieces: Int,
+  val costPerPiecePaise: Long,
+  val lineTotalPaise: Long,
+  val condition: ReturnCondition
+)
+
+data class CreditDebitNote(
+  val id: Long = 0,
+  val noteNumber: String,
+  val noteType: CreditDebitNoteType,
+  val partyType: PartyType,
+  val partyId: Long,
+  val linkedInvoiceId: Long? = null,
+  val linkedReturnId: Long? = null,
+  val subledgerEntryId: Long? = null,
+  val amountPaise: Long,
+  val appliedAmountPaise: Long = 0L,
+  val status: NoteStatus = NoteStatus.OPEN,
+  val issueDate: Long,
+  val reason: String,
+  val notes: String = "",
+  val idempotencyKey: String? = null,
+  val createdAt: Long = System.currentTimeMillis(),
+  val updatedAt: Long = System.currentTimeMillis()
+) {
+  val remainingAmountPaise: Long get() = (amountPaise - appliedAmountPaise).coerceAtLeast(0L)
+}
+
+data class RefundRecord(
+  val id: Long = 0,
+  val partyType: PartyType,
+  val partyId: Long,
+  val sourceType: RefundSourceType,
+  val sourceId: Long,
+  val amountPaise: Long,
+  val paymentMethod: PaymentMethod,
+  val executionStatus: RefundExecutionStatus = RefundExecutionStatus.RECORDED_PENDING_PAYOUT,
+  val reason: String,
+  val notes: String = "",
+  val referenceNumber: String = "",
+  val subledgerEntryId: Long? = null,
+  val recordedAt: Long = System.currentTimeMillis(),
+  val executedAt: Long? = null,
+  val idempotencyKey: String? = null
+)
+
+data class FinancialAuditLog(
+  val id: Long = 0,
+  val operationType: AuditOperationType,
+  val entityType: String,
+  val entityId: Long,
+  val relatedPartyType: PartyType? = null,
+  val relatedPartyId: Long? = null,
+  val actorLabel: String = "Owner",
+  val reason: String,
+  val beforeJson: String = "",
+  val afterJson: String = "",
+  val operationReference: String = "",
+  val createdAt: Long = System.currentTimeMillis()
+)
+
+data class SalesInvoiceDetail(
+  val invoice: SalesInvoice,
+  val customer: Customer?,
+  val items: List<SalesInvoiceItem>,
+  val allocations: List<PaymentAllocation>,
+  val returns: List<SalesReturn>,
+  val notesList: List<CreditDebitNote>,
+  val refunds: List<RefundRecord>,
+  val auditLogs: List<FinancialAuditLog>,
+  val returnedQtyByProductId: Map<Long, Int> = emptyMap(),
+  val totalReturnedAmountPaise: Long = 0L
+)
+
+data class PurchaseInvoiceDetail(
+  val invoice: PurchaseInvoice,
+  val supplier: Supplier?,
+  val items: List<PurchaseInvoiceItem>,
+  val batches: List<ProductBatch>,
+  val soldQtyByBatchNumber: Map<String, Int>,
+  val allocations: List<PaymentAllocation>,
+  val returns: List<PurchaseReturn>,
+  val notesList: List<CreditDebitNote>,
+  val refunds: List<RefundRecord>,
+  val auditLogs: List<FinancialAuditLog>,
+  val returnedQtyByProductId: Map<Long, Int> = emptyMap(),
+  val totalReturnedAmountPaise: Long = 0L
+)
+
 

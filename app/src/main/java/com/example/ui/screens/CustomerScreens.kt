@@ -32,6 +32,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -476,6 +477,39 @@ fun AddEditCustomerDialog(
           )
         }
 
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          FilterChip(
+            selected = !formState.openingBalanceIsAdvance,
+            onClick = { onUpdateForm { s -> s.copy(openingBalanceIsAdvance = false) } },
+            label = { Text("Receivable Due", fontSize = 11.sp) },
+            modifier = Modifier.testTag("customer_opening_due_chip")
+          )
+          FilterChip(
+            selected = formState.openingBalanceIsAdvance,
+            onClick = { onUpdateForm { s -> s.copy(openingBalanceIsAdvance = true) } },
+            label = { Text("Advance Credit", fontSize = 11.sp) },
+            modifier = Modifier.testTag("customer_opening_advance_chip")
+          )
+        }
+
+        IceTrackDatePickerField(
+          label = "Opening Balance Date",
+          dateMillis = formState.openingBalanceDate,
+          onDateSelected = { millis -> onUpdateForm { s -> s.copy(openingBalanceDate = millis) } },
+          testTagValue = "customer_opening_date_picker"
+        )
+
+        if (formState.id != 0L) {
+          OutlinedTextField(
+            value = formState.openingBalanceEditReason,
+            onValueChange = { onUpdateForm { s -> s.copy(openingBalanceEditReason = it) } },
+            label = { Text("Opening Balance Change Reason (Audit)") },
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("customer_opening_reason_input")
+          )
+        }
+
         OutlinedTextField(
           value = formState.paymentTermsDays,
           onValueChange = { onUpdateForm { s -> s.copy(paymentTermsDays = it) } },
@@ -520,7 +554,7 @@ fun AddEditCustomerDialog(
             .border(1.dp, FigmaLine, RoundedCornerShape(8.dp))
         ) {
           Text(
-            text = "Opening date: ${SubledgerCalculationEngine.formatDate(formState.openingBalanceDate)}. Creates a baseline subledger receivable entry.",
+            text = "Creates an audited baseline subledger ${if (formState.openingBalanceIsAdvance) "advance credit" else "receivable"} entry.",
             style = MaterialTheme.typography.labelSmall,
             color = FigmaInk,
             modifier = Modifier.padding(8.dp)

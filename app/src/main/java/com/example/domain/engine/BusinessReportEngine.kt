@@ -1,11 +1,14 @@
 package com.example.domain.engine
 
 import com.example.domain.model.Expense
+import com.example.domain.model.InvoiceStatus
 import com.example.domain.model.PartyType
 import com.example.domain.model.Product
 import com.example.domain.model.PurchaseInvoice
 import com.example.domain.model.SalesInvoice
 import com.example.domain.model.SalesInvoiceItem
+import com.example.domain.model.SalesReturn
+import com.example.domain.model.SalesReturnItem
 import com.example.domain.model.SubledgerEntry
 import java.util.Calendar
 
@@ -108,6 +111,7 @@ object BusinessReportEngine {
     endDate: Long? = null
   ): List<SalesInvoice> {
     return salesInvoices.filter { invoice ->
+      invoice.invoiceStatus == InvoiceStatus.ACTIVE &&
       (startDate == null || invoice.invoiceDate >= startDate) &&
       (endDate == null || invoice.invoiceDate <= endDate)
     }
@@ -119,17 +123,16 @@ object BusinessReportEngine {
     endDate: Long? = null
   ): List<PurchaseInvoice> {
     return purchases.filter { invoice ->
+      invoice.invoiceStatus == InvoiceStatus.ACTIVE &&
       (startDate == null || invoice.invoiceDate >= startDate) &&
       (endDate == null || invoice.invoiceDate <= endDate)
     }
   }
 
   /**
-   * Calculates comprehensive Profit & Loss using actual batch purchase costs (COGS).
-   * Gross Profit = Total Sales Revenue - COGS
-   * Net Profit = Gross Profit - Operating Expenses
-   *
-   * Note: COGS is calculated strictly from line-level batch costs, NEVER estimated from selling price alone.
+   * Calculates comprehensive Profit & Loss using actual batch purchase costs (COGS),
+   * excluding CANCELLED invoices and subtracting sales returns (restoring COGS only for
+   * resellable returned stock).
    */
   fun calculateProfitAndLoss(
     salesInvoices: List<SalesInvoice>,
@@ -137,19 +140,40 @@ object BusinessReportEngine {
     batchCostMap: Map<Long, Long>, // batchId -> costPerPiecePaise
     expenses: List<Expense>,
     startDate: Long? = null,
-    endDate: Long? = null
+    endDate: Long? = null,
+    salesReturns: List<SalesReturn> = emptyList(),
+    salesReturnItems: List<SalesReturnItem> = emptyList()
   ): ProfitLossSummary {
     val filteredSales = filterSalesByDateRange(salesInvoices, startDate, endDate)
 
     val filteredInvoiceIds = filteredSales.map { it.id }.toSet()
     val relevantItems = salesItems.filter { it.salesInvoiceId in filteredInvoiceIds }
 
-    val totalSalesRevenue = relevantItems.sumOf { it.lineTotalPaise }
+    val itemSubtotal = relevantItems.sumOf { it.lineTotalPaise }
+    val invoiceNetAdjust = filteredSales.sumOf { it.additionalChargesPaise - it.discountAmountPaise }
 
-    val totalCogs = relevantItems.sumOf { item ->
+    val filteredReturns = salesReturns.filter { ret ->
+      (startDate == null || ret.returnDate >= startDate) &&
+      (endDate == null || ret.returnDate <= endDate)
+    }
+    val filteredReturnIds = filteredReturns.map { it.id }.toSet()
+    val relevantReturnItems = salesReturnItems.filter { it.salesReturnId in filteredReturnIds }
+    val returnRevenueReduction = filteredReturns.sumOf { it.totalReturnAmountPaise }
+
+    val totalSalesRevenue = (itemSubtotal + invoiceNetAdjust - returnRevenueReduction).coerceAtLeast(0L)
+
+    val grossCogs = relevantItems.sumOf { item ->
       val costPerPiece = batchCostMap[item.batchId] ?: 0L
       item.quantityPieces.toLong() * costPerPiece
     }
+    // Only resellable items returned to saleable inventory reduce COGS; damaged/melted/expired remain write-off COGS
+    val resellableReturnCogs = relevantReturnItems
+      .filter { it.restoredToSaleableStock }
+      .sumOf { retItem ->
+        val costPerPiece = batchCostMap[retItem.batchId] ?: 0L
+        retItem.quantityPieces.toLong() * costPerPiece
+      }
+    val totalCogs = (grossCogs - resellableReturnCogs).coerceAtLeast(0L)
 
     val grossProfit = totalSalesRevenue - totalCogs
 
@@ -160,7 +184,7 @@ object BusinessReportEngine {
     val totalExpenses = filteredExpenses.sumOf { it.amountPaise }
 
     val netProfit = grossProfit - totalExpenses
-    val totalPieces = relevantItems.sumOf { it.quantityPieces }
+    val totalPieces = (relevantItems.sumOf { it.quantityPieces } - relevantReturnItems.sumOf { it.quantityPieces }).coerceAtLeast(0)
 
     return ProfitLossSummary(
       totalSalesRevenuePaise = totalSalesRevenue,
@@ -214,7 +238,8 @@ object BusinessReportEngine {
     salesInvoices: List<SalesInvoice>,
     subledgerEntries: List<SubledgerEntry>? = null
   ): List<ShopSalesPerformance> {
-    val invoicesByCustomer = salesInvoices.groupBy { it.customerId }
+    val activeInvoices = salesInvoices.filter { it.invoiceStatus == InvoiceStatus.ACTIVE }
+    val invoicesByCustomer = activeInvoices.groupBy { it.customerId }
     val entriesByCustomer = subledgerEntries
       ?.filter { !it.isReversed && it.partyType == PartyType.CUSTOMER }
       ?.groupBy { it.partyId }
@@ -249,7 +274,7 @@ object BusinessReportEngine {
   }
 
   /**
-   * Calculates Supplier-wise purchase totals and payables across filtered purchase invoices.
+   * Calculates Supplier-wise purchase totals and payables across filtered active purchase invoices.
    * When [subledgerEntries] is provided, payable and advance credit balances come directly
    * from the authoritative subledger.
    */
@@ -258,7 +283,8 @@ object BusinessReportEngine {
     purchaseInvoices: List<PurchaseInvoice>,
     subledgerEntries: List<SubledgerEntry>? = null
   ): List<SupplierPurchaseSummary> {
-    val bySupplier = purchaseInvoices.groupBy { it.supplierId }
+    val activeBills = purchaseInvoices.filter { it.invoiceStatus == InvoiceStatus.ACTIVE }
+    val bySupplier = activeBills.groupBy { it.supplierId }
     val entriesBySupplier = subledgerEntries
       ?.filter { !it.isReversed && it.partyType == PartyType.SUPPLIER }
       ?.groupBy { it.partyId }

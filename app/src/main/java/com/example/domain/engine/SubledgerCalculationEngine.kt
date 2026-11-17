@@ -1,9 +1,11 @@
 package com.example.domain.engine
 
+import com.example.domain.model.DiscountType
 import com.example.domain.model.PartyType
 import com.example.domain.model.SubledgerEntry
 import java.math.BigDecimal
 import java.math.BigInteger
+import java.math.RoundingMode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -156,5 +158,74 @@ object SubledgerCalculationEngine {
     val formatter = dateFormatterThreadLocal.get()
       ?: SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
     return formatter.format(Date(timestamp))
+  }
+
+  /**
+   * Computes exact integer paise discount from [subtotalPaise] using BigDecimal HALF_UP.
+   * For [DiscountType.PERCENT], [discountValueRaw] is in basis points (e.g., 500 = 5.00%, 10000 = 100.00%).
+   * For [DiscountType.FLAT], [discountValueRaw] is in paise.
+   */
+  fun calculateDiscountPaise(
+    subtotalPaise: Long,
+    discountType: DiscountType,
+    discountValueRaw: Long
+  ): Long {
+    require(subtotalPaise >= 0L) { "Subtotal cannot be negative" }
+    return when (discountType) {
+      DiscountType.NONE -> 0L
+      DiscountType.FLAT -> {
+        require(discountValueRaw >= 0L) { "Flat discount cannot be negative" }
+        require(discountValueRaw <= subtotalPaise) {
+          "Flat discount (${formatPaise(discountValueRaw)}) cannot exceed subtotal (${formatPaise(subtotalPaise)})"
+        }
+        discountValueRaw
+      }
+      DiscountType.PERCENT -> {
+        require(discountValueRaw in 0L..10000L) { "Percentage discount must be between 0% and 100%" }
+        BigDecimal.valueOf(subtotalPaise)
+          .multiply(BigDecimal.valueOf(discountValueRaw))
+          .divide(BigDecimal.valueOf(10000L), 0, RoundingMode.HALF_UP)
+          .longValueExact()
+          .coerceAtMost(subtotalPaise)
+      }
+    }
+  }
+
+  fun parsePercentToBasisPoints(input: String): Long {
+    val clean = input.trim().replace("%", "").replace(" ", "")
+    if (clean.isEmpty()) return 0L
+    val bp = parseRupeesToPaiseOrNull(clean, allowNegative = false, allowEmptyAsZero = true)
+      ?: throw IllegalArgumentException("Invalid percentage: '$input'. Enter 0 to 100 with up to 2 decimals.")
+    require(bp in 0L..10000L) { "Percentage must be between 0% and 100%" }
+    return bp
+  }
+
+  fun formatBasisPointsAsPercent(basisPoints: Long): String {
+    return formatPaiseForInput(basisPoints)
+  }
+
+  data class InvoiceTotalComputation(
+    val subtotalPaise: Long,
+    val discountAmountPaise: Long,
+    val additionalChargesPaise: Long,
+    val totalAmountPaise: Long
+  )
+
+  fun computeInvoiceTotals(
+    subtotalPaise: Long,
+    discountType: DiscountType,
+    discountValueRaw: Long,
+    additionalChargesPaise: Long
+  ): InvoiceTotalComputation {
+    require(subtotalPaise >= 0L) { "Subtotal cannot be negative" }
+    require(additionalChargesPaise >= 0L) { "Additional charges cannot be negative" }
+    val discountPaise = calculateDiscountPaise(subtotalPaise, discountType, discountValueRaw)
+    val total = (subtotalPaise - discountPaise + additionalChargesPaise).coerceAtLeast(0L)
+    return InvoiceTotalComputation(
+      subtotalPaise = subtotalPaise,
+      discountAmountPaise = discountPaise,
+      additionalChargesPaise = additionalChargesPaise,
+      totalAmountPaise = total
+    )
   }
 }

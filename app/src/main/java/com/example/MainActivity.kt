@@ -43,18 +43,24 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.local.IceTrackDatabase
+import com.example.data.repository.AuditRepository
+import com.example.data.repository.CreditDebitNoteRepository
 import com.example.data.repository.CustomerRepository
 import com.example.data.repository.ExpenseRepository
 import com.example.data.repository.InventoryRepository
+import com.example.data.repository.InvoiceLifecycleRepository
 import com.example.data.repository.PaymentReminderRepository
 import com.example.data.repository.ProductRepository
 import com.example.data.repository.PurchaseRepository
+import com.example.data.repository.RefundRepository
+import com.example.data.repository.ReturnRepository
 import com.example.data.repository.SalesRepository
 import com.example.data.repository.SettingsRepository
 import com.example.data.repository.SubledgerRepository
 import com.example.data.repository.SupplierRepository
 import com.example.service.NotificationService
 import com.example.ui.navigation.Screen
+import com.example.ui.screens.CreditDebitNotesAuditScreen
 import com.example.ui.screens.CustomerListScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.ExpensesScreen
@@ -82,6 +88,7 @@ import com.example.ui.theme.IceTrackTheme
 import com.example.ui.viewmodel.CustomerViewModel
 import com.example.ui.viewmodel.DashboardViewModel
 import com.example.ui.viewmodel.ExpenseViewModel
+import com.example.ui.viewmodel.FinanceLifecycleViewModel
 import com.example.ui.viewmodel.InventoryViewModel
 import com.example.ui.viewmodel.PaymentReminderViewModel
 import com.example.ui.viewmodel.ProductViewModel
@@ -110,6 +117,11 @@ class MainActivity : ComponentActivity() {
     val salesRepo = SalesRepository(database)
     val expenseRepo = ExpenseRepository(database)
     val reminderRepo = PaymentReminderRepository(database)
+    val returnRepo = ReturnRepository(database)
+    val noteRepo = CreditDebitNoteRepository(database)
+    val refundRepo = RefundRepository(database)
+    val auditRepo = AuditRepository(database)
+    val lifecycleRepo = InvoiceLifecycleRepository(database)
 
     val dashboardViewModel by viewModels<DashboardViewModel> {
       DashboardViewModel.Factory(
@@ -132,16 +144,16 @@ class MainActivity : ComponentActivity() {
       CustomerViewModel.Factory(customerRepo, productRepo, subledgerRepo)
     }
     val settingsViewModel by viewModels<SettingsViewModel> {
-      SettingsViewModel.Factory(settingsRepo)
+      SettingsViewModel.Factory(settingsRepo, database)
     }
     val inventoryViewModel by viewModels<InventoryViewModel> {
       InventoryViewModel.Factory(inventoryRepo, productRepo)
     }
     val purchaseViewModel by viewModels<PurchaseViewModel> {
-      PurchaseViewModel.Factory(purchaseRepo, supplierRepo, productRepo, subledgerRepo)
+      PurchaseViewModel.Factory(purchaseRepo, supplierRepo, productRepo, subledgerRepo, lifecycleRepo, returnRepo)
     }
     val salesViewModel by viewModels<SalesViewModel> {
-      SalesViewModel.Factory(salesRepo, customerRepo, productRepo, inventoryRepo, subledgerRepo)
+      SalesViewModel.Factory(salesRepo, customerRepo, productRepo, inventoryRepo, subledgerRepo, lifecycleRepo, returnRepo)
     }
     val expenseViewModel by viewModels<ExpenseViewModel> {
       ExpenseViewModel.Factory(expenseRepo)
@@ -155,7 +167,8 @@ class MainActivity : ComponentActivity() {
         supplierRepo = supplierRepo,
         inventoryRepo = inventoryRepo,
         expenseRepo = expenseRepo,
-        subledgerRepo = subledgerRepo
+        subledgerRepo = subledgerRepo,
+        returnRepo = returnRepo
       )
     }
     val paymentReminderViewModel by viewModels<PaymentReminderViewModel> {
@@ -164,6 +177,18 @@ class MainActivity : ComponentActivity() {
         salesRepository = salesRepo,
         subledgerRepository = subledgerRepo,
         reminderRepository = reminderRepo
+      )
+    }
+    val financeLifecycleViewModel by viewModels<FinanceLifecycleViewModel> {
+      FinanceLifecycleViewModel.Factory(
+        subledgerRepo = subledgerRepo,
+        noteRepo = noteRepo,
+        refundRepo = refundRepo,
+        auditRepo = auditRepo,
+        customerRepo = customerRepo,
+        supplierRepo = supplierRepo,
+        salesRepo = salesRepo,
+        purchaseRepo = purchaseRepo
       )
     }
 
@@ -181,6 +206,7 @@ class MainActivity : ComponentActivity() {
           expenseViewModel = expenseViewModel,
           reportsViewModel = reportsViewModel,
           paymentReminderViewModel = paymentReminderViewModel,
+          financeLifecycleViewModel = financeLifecycleViewModel,
           subledgerRepo = subledgerRepo
         )
       }
@@ -202,6 +228,7 @@ fun MainAppContent(
   expenseViewModel: ExpenseViewModel,
   reportsViewModel: ReportsViewModel,
   paymentReminderViewModel: PaymentReminderViewModel,
+  financeLifecycleViewModel: FinanceLifecycleViewModel,
   subledgerRepo: SubledgerRepository
 ) {
   var currentScreen by remember { mutableStateOf(Screen.DASHBOARD) }
@@ -219,6 +246,8 @@ fun MainAppContent(
         selectedLedgerCustomerName = null
         returnToRemindersFromLedger = false
         currentScreen = Screen.PAYMENT_REMINDERS
+      } else if (currentScreen == Screen.NOTES_REFUNDS_AUDIT) {
+        currentScreen = Screen.MORE
       } else {
         selectedLedgerCustomerId = null
         selectedLedgerCustomerName = null
@@ -249,6 +278,7 @@ fun MainAppContent(
               Screen.CUSTOMERS -> "Retail Shops"
               Screen.SUPPLIERS -> "Suppliers"
               Screen.PAYMENT_REMINDERS -> "Payment Reminders"
+              Screen.NOTES_REFUNDS_AUDIT -> "Notes, Refunds & Audit"
               Screen.LEDGER -> "Transaction Subledger"
               Screen.SETTINGS -> "Business Settings"
               Screen.STOCK -> "Inventory Stock"
@@ -272,6 +302,8 @@ fun MainAppContent(
                   selectedLedgerCustomerName = null
                   returnToRemindersFromLedger = false
                   currentScreen = Screen.PAYMENT_REMINDERS
+                } else if (currentScreen == Screen.NOTES_REFUNDS_AUDIT) {
+                  currentScreen = Screen.MORE
                 } else {
                   selectedLedgerCustomerId = null
                   selectedLedgerCustomerName = null
@@ -390,10 +422,10 @@ fun MainAppContent(
           )
         )
         NavigationBarItem(
-          selected = currentScreen in listOf(Screen.REPORTS, Screen.MORE, Screen.PRODUCTS, Screen.SUPPLIERS, Screen.CUSTOMERS, Screen.EXPENSES, Screen.PAYMENT_REMINDERS),
+          selected = currentScreen in listOf(Screen.REPORTS, Screen.MORE, Screen.PRODUCTS, Screen.SUPPLIERS, Screen.CUSTOMERS, Screen.EXPENSES, Screen.PAYMENT_REMINDERS, Screen.NOTES_REFUNDS_AUDIT),
           onClick = { currentScreen = Screen.MORE },
           icon = { Icon(Icons.Default.Assessment, contentDescription = "More") },
-          label = { Text("More", fontSize = 10.sp, maxLines = 1, fontWeight = if (currentScreen in listOf(Screen.REPORTS, Screen.MORE, Screen.PRODUCTS, Screen.SUPPLIERS, Screen.CUSTOMERS, Screen.EXPENSES, Screen.PAYMENT_REMINDERS)) FontWeight.Bold else FontWeight.Normal) },
+          label = { Text("More", fontSize = 10.sp, maxLines = 1, fontWeight = if (currentScreen in listOf(Screen.REPORTS, Screen.MORE, Screen.PRODUCTS, Screen.SUPPLIERS, Screen.CUSTOMERS, Screen.EXPENSES, Screen.PAYMENT_REMINDERS, Screen.NOTES_REFUNDS_AUDIT)) FontWeight.Bold else FontWeight.Normal) },
           colors = NavigationBarItemDefaults.colors(
             indicatorColor = FigmaSoftTeal,
             selectedIconColor = FigmaTeal,
@@ -442,6 +474,7 @@ fun MainAppContent(
             currentScreen = Screen.LEDGER
           }
         )
+        Screen.NOTES_REFUNDS_AUDIT -> CreditDebitNotesAuditScreen(viewModel = financeLifecycleViewModel)
         Screen.LEDGER -> SubledgerScreen(
           subledgerRepository = subledgerRepo,
           filteredCustomerId = selectedLedgerCustomerId,
@@ -450,7 +483,9 @@ fun MainAppContent(
             selectedLedgerCustomerId = null
             selectedLedgerCustomerName = null
             returnToRemindersFromLedger = false
-          }
+          },
+          financeViewModel = financeLifecycleViewModel,
+          onOpenNotesAndAudit = { currentScreen = Screen.NOTES_REFUNDS_AUDIT }
         )
         Screen.SETTINGS -> SettingsScreen(viewModel = settingsViewModel)
         Screen.MORE -> MoreScreen(onNavigate = {

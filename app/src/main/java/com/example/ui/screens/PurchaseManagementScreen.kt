@@ -69,9 +69,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
+import android.content.Intent
+import androidx.compose.ui.platform.LocalContext
 import com.example.domain.engine.CreditLimitAssessment
 import com.example.domain.engine.PaymentAllocationEngine
 import com.example.domain.engine.SubledgerCalculationEngine
+import com.example.domain.model.InvoiceStatus
 import com.example.domain.model.PaymentMethod
 import com.example.domain.model.PaymentStatus
 import com.example.domain.model.Product
@@ -112,16 +115,22 @@ fun PurchaseManagementScreen(
 ) {
   val invoices by viewModel.purchases.collectAsState()
   val suppliers by viewModel.suppliers.collectAsState()
+  val allSuppliers by viewModel.allSuppliersIncludingArchived.collectAsState()
   val products by viewModel.products.collectAsState()
+  val allProducts by viewModel.allProductsIncludingArchived.collectAsState()
   val supplierBalances by viewModel.supplierBalances.collectAsState()
   val supplierAdvances by viewModel.supplierAdvances.collectAsState()
   val isSubmitting by viewModel.isSubmitting.collectAsState()
+  val selectedPurchaseDetail by viewModel.selectedPurchaseDetail.collectAsState()
+  val context = LocalContext.current
 
   var showNewInvoiceDialog by remember { mutableStateOf(false) }
   var pendingCreditOverride by remember { mutableStateOf<PendingPurchaseCreditOverride?>(null) }
   var overrideFailureError by remember { mutableStateOf<String?>(null) }
   var showPaymentDialog by remember { mutableStateOf<Supplier?>(null) }
-  var selectedInvoiceForDetail by remember { mutableStateOf<PurchaseInvoice?>(null) }
+  var showEditDetailDialog by remember { mutableStateOf(false) }
+  var showReturnDetailDialog by remember { mutableStateOf(false) }
+  var showCancelDetailDialog by remember { mutableStateOf(false) }
   val snackbarHostState = remember { SnackbarHostState() }
   val scope = rememberCoroutineScope()
 
@@ -222,11 +231,16 @@ fun PurchaseManagementScreen(
           verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
           items(invoices, key = { it.id }) { invoice ->
-            val supplier = suppliers.find { it.id == invoice.supplierId }
+            val supplier = allSuppliers.find { it.id == invoice.supplierId } ?: suppliers.find { it.id == invoice.supplierId }
             PurchaseInvoiceCard(
               invoice = invoice,
-              supplierName = supplier?.name ?: "Supplier #${invoice.supplierId}",
-              onClick = { selectedInvoiceForDetail = invoice }
+              supplierName = invoice.partyNameSnapshot.ifBlank { supplier?.name ?: "Supplier #${invoice.supplierId}" },
+              onClick = {
+                showEditDetailDialog = false
+                showReturnDetailDialog = false
+                showCancelDetailDialog = false
+                viewModel.loadPurchaseDetail(invoice.id)
+              }
             )
           }
         }
@@ -384,6 +398,96 @@ fun PurchaseManagementScreen(
       }
     )
   }
+
+  selectedPurchaseDetail?.let { detail ->
+    if (!showEditDetailDialog && !showReturnDetailDialog && !showCancelDetailDialog) {
+      PurchaseInvoiceDetailDialog(
+        detail = detail,
+        onDismiss = { viewModel.dismissPurchaseDetail() },
+        onEditClick = { showEditDetailDialog = true },
+        onReturnClick = { showReturnDetailDialog = true },
+        onCancelClick = { showCancelDetailDialog = true },
+        onShareClick = {
+          try {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+              type = "text/plain"
+              putExtra(Intent.EXTRA_SUBJECT, "Purchase Invoice #${detail.invoice.invoiceNumber}")
+              putExtra(Intent.EXTRA_TEXT, viewModel.formatPurchaseInvoiceSummary(detail))
+            }
+            context.startActivity(Intent.createChooser(intent, "Share Purchase Invoice"))
+          } catch (_: Exception) {
+            scope.launch { snackbarHostState.showSnackbar("No app available to share invoice text.") }
+          }
+        }
+      )
+    }
+
+    if (showEditDetailDialog) {
+      EditPurchaseInvoiceDialog(
+        detail = detail,
+        suppliers = allSuppliers.ifEmpty { suppliers },
+        products = allProducts.ifEmpty { products },
+        isSubmitting = isSubmitting,
+        onGetProductUnit = { productId -> viewModel.getProductUnit(productId) },
+        onDismiss = { showEditDetailDialog = false },
+        onSubmit = { req, onErr ->
+          viewModel.editPurchaseInvoice(
+            request = req,
+            onSuccess = {
+              showEditDetailDialog = false
+              scope.launch { snackbarHostState.showSnackbar("Purchase #${detail.invoice.invoiceNumber} updated.") }
+            },
+            onError = onErr
+          )
+        }
+      )
+    }
+
+    if (showReturnDetailDialog) {
+      PurchaseReturnDialog(
+        detail = detail,
+        isSubmitting = isSubmitting,
+        onDismiss = { showReturnDetailDialog = false },
+        onSubmit = { lines, settlement, method, reason, notes, onErr ->
+          viewModel.createPurchaseReturn(
+            purchaseInvoiceId = detail.invoice.id,
+            lines = lines,
+            settlementType = settlement,
+            refundPaymentMethod = method,
+            reason = reason,
+            notes = notes,
+            onSuccess = {
+              showReturnDetailDialog = false
+              scope.launch { snackbarHostState.showSnackbar("Purchase return recorded cleanly.") }
+            },
+            onError = onErr
+          )
+        }
+      )
+    }
+
+    if (showCancelDetailDialog) {
+      CancelInvoiceDialog(
+        invoiceNumber = detail.invoice.invoiceNumber,
+        paidAmountPaise = detail.invoice.paidAmountPaise,
+        partyLabel = detail.invoice.partyNameSnapshot.ifBlank { detail.supplier?.name ?: "Supplier" },
+        isSubmitting = isSubmitting,
+        onDismiss = { showCancelDetailDialog = false },
+        onConfirm = { reason, mode, onErr ->
+          viewModel.cancelPurchaseInvoice(
+            invoiceId = detail.invoice.id,
+            reason = reason,
+            paymentMode = mode,
+            onSuccess = {
+              showCancelDetailDialog = false
+              scope.launch { snackbarHostState.showSnackbar("Purchase #${detail.invoice.invoiceNumber} cancelled.") }
+            },
+            onError = onErr
+          )
+        }
+      )
+    }
+  }
 }
 
 @Composable
@@ -429,20 +533,25 @@ fun PurchaseInvoiceCard(
           )
         }
 
+        val isCancelled = invoice.invoiceStatus == InvoiceStatus.CANCELLED
         Surface(
           shape = RoundedCornerShape(6.dp),
-          color = when (invoice.paymentStatus) {
+          color = if (isCancelled) {
+            FigmaRed.copy(alpha = 0.14f)
+          } else when (invoice.paymentStatus) {
             PaymentStatus.PAID -> FigmaSoftTeal
             PaymentStatus.PARTIALLY_PAID -> FigmaAmber.copy(alpha = 0.15f)
             PaymentStatus.UNPAID -> FigmaRed.copy(alpha = 0.12f)
           }
         ) {
           Text(
-            text = invoice.paymentStatus.displayName,
+            text = if (isCancelled) "Cancelled" else invoice.paymentStatus.displayName,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
-            color = when (invoice.paymentStatus) {
+            color = if (isCancelled) {
+              FigmaRed
+            } else when (invoice.paymentStatus) {
               PaymentStatus.PAID -> FigmaTeal
               PaymentStatus.PARTIALLY_PAID -> FigmaAmber
               PaymentStatus.UNPAID -> FigmaRed

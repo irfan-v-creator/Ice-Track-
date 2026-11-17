@@ -6,6 +6,7 @@ import com.example.data.local.entity.AppSettingEntity
 import com.example.data.local.entity.CustomerEntity
 import com.example.data.local.entity.CustomerProductPriceEntity
 import com.example.data.local.entity.ExpenseEntity
+import com.example.data.local.entity.FinancialAuditLogEntity
 import com.example.data.local.entity.PaymentAllocationEntity
 import com.example.data.local.entity.ProductBatchEntity
 import com.example.data.local.entity.ProductEntity
@@ -25,9 +26,12 @@ import com.example.domain.engine.OpeningBalanceAllocationTarget
 import com.example.domain.engine.PaymentAllocationEngine
 import com.example.domain.engine.SubledgerCalculationEngine
 import com.example.domain.engine.UnitConversionEngine
+import com.example.domain.model.AdvanceReversalStrategy
 import com.example.domain.model.AppSetting
+import com.example.domain.model.AuditOperationType
 import com.example.domain.model.Customer
 import com.example.domain.model.CustomerProductPrice
+import com.example.domain.model.DiscountType
 import com.example.domain.model.Expense
 import com.example.domain.model.ExpenseCategory
 import com.example.domain.model.PartyType
@@ -48,10 +52,12 @@ import com.example.domain.model.StockMovementType
 import com.example.domain.model.SubledgerEntry
 import com.example.domain.model.SubledgerEntryType
 import com.example.domain.model.Supplier
+import com.example.domain.model.UnitType
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
+import org.json.JSONObject
 
 class CreditLimitExceededException(
   val assessment: CreditLimitAssessment,
@@ -160,6 +166,7 @@ class SupplierRepository(private val db: IceTrackDatabase) {
   private val subledgerDao = db.subledgerDao()
   private val allocationDao = db.paymentAllocationDao()
   private val purchaseDao = db.purchaseInvoiceDao()
+  private val auditDao = db.financialAuditLogDao()
 
   val allActiveSuppliers: Flow<List<Supplier>> = supplierDao.getAllActive().map { list ->
     list.map { it.toDomain() }
@@ -208,7 +215,10 @@ class SupplierRepository(private val db: IceTrackDatabase) {
     }
   }
 
-  suspend fun saveSupplier(supplier: Supplier): Long = db.withTransaction {
+  suspend fun saveSupplier(
+    supplier: Supplier,
+    openingEditReason: String = "Opening balance updated"
+  ): Long = db.withTransaction {
     val isNew = supplier.id == 0L
     val existing = if (!isNew) {
       supplierDao.getSupplierSync(supplier.id)
@@ -444,6 +454,29 @@ class SupplierRepository(private val db: IceTrackDatabase) {
           }
         }
       }
+      if (existing != null) {
+        val beforeSnap = JSONObject()
+          .put("openingBalancePaise", existing.openingBalancePaise)
+          .put("openingBalanceDate", existing.openingBalanceDate)
+          .toString()
+        val afterSnap = JSONObject()
+          .put("openingBalancePaise", supplier.openingBalancePaise)
+          .put("openingBalanceDate", supplier.openingBalanceDate)
+          .toString()
+        auditDao.insert(
+          FinancialAuditLogEntity(
+            operationType = AuditOperationType.OPENING_BALANCE_EDIT,
+            entityType = "SUPPLIER",
+            entityId = supplierId,
+            relatedPartyType = PartyType.SUPPLIER,
+            relatedPartyId = supplierId,
+            reason = openingEditReason.ifBlank { "Supplier opening balance updated" },
+            beforeJson = beforeSnap,
+            afterJson = afterSnap,
+            operationReference = supplier.name
+          )
+        )
+      }
     }
 
     supplierId
@@ -460,6 +493,7 @@ class CustomerRepository(private val db: IceTrackDatabase) {
   private val priceDao = db.customerProductPriceDao()
   private val allocationDao = db.paymentAllocationDao()
   private val salesDao = db.salesInvoiceDao()
+  private val auditDao = db.financialAuditLogDao()
 
   val allActiveCustomers: Flow<List<Customer>> = customerDao.getAllActive().map { list ->
     list.map { it.toDomain() }
@@ -513,7 +547,8 @@ class CustomerRepository(private val db: IceTrackDatabase) {
   suspend fun saveCustomer(
     customer: Customer,
     customPrices: List<CustomerProductPrice> = emptyList(),
-    replaceCustomPrices: Boolean = false
+    replaceCustomPrices: Boolean = false,
+    openingEditReason: String = "Opening balance updated"
   ): Long = db.withTransaction {
     val isNew = customer.id == 0L
     val existing = if (!isNew) {
@@ -750,6 +785,29 @@ class CustomerRepository(private val db: IceTrackDatabase) {
           }
         }
       }
+      if (existing != null) {
+        val beforeSnap = JSONObject()
+          .put("openingBalancePaise", existing.openingBalancePaise)
+          .put("openingBalanceDate", existing.openingBalanceDate)
+          .toString()
+        val afterSnap = JSONObject()
+          .put("openingBalancePaise", customer.openingBalancePaise)
+          .put("openingBalanceDate", customer.openingBalanceDate)
+          .toString()
+        auditDao.insert(
+          FinancialAuditLogEntity(
+            operationType = AuditOperationType.OPENING_BALANCE_EDIT,
+            entityType = "CUSTOMER",
+            entityId = customerId,
+            relatedPartyType = PartyType.CUSTOMER,
+            relatedPartyId = customerId,
+            reason = openingEditReason.ifBlank { "Customer opening balance updated" },
+            beforeJson = beforeSnap,
+            afterJson = afterSnap,
+            operationReference = customer.shopName
+          )
+        )
+      }
     }
 
     if (replaceCustomPrices) {
@@ -779,6 +837,9 @@ class CustomerRepository(private val db: IceTrackDatabase) {
 class SubledgerRepository(private val db: IceTrackDatabase) {
   private val subledgerDao = db.subledgerDao()
   private val allocationDao = db.paymentAllocationDao()
+  private val purchaseDao = db.purchaseInvoiceDao()
+  private val salesDao = db.salesInvoiceDao()
+  private val auditDao = db.financialAuditLogDao()
 
   val allEntries: Flow<List<SubledgerEntry>> = subledgerDao.getAllEntries().map { list ->
     list.map { it.toDomain() }
@@ -821,7 +882,136 @@ class SubledgerRepository(private val db: IceTrackDatabase) {
   }
 
   suspend fun reverseEntry(entryId: Long) {
-    subledgerDao.markReversed(entryId)
+    val entry = subledgerDao.getByIdSync(entryId)
+      ?: throw IllegalArgumentException("Subledger entry #$entryId not found")
+    if (entry.entryType == SubledgerEntryType.PAYMENT) {
+      reversePaymentTransaction(
+        entryId = entryId,
+        reason = "Manual payment reversal",
+        advanceStrategy = AdvanceReversalStrategy.CASCADE_UNAPPLY
+      )
+    } else {
+      db.withTransaction {
+        val now = System.currentTimeMillis()
+        subledgerDao.markReversed(entryId, now, "Manual entry reversal")
+        auditDao.insert(
+          FinancialAuditLogEntity(
+            operationType = AuditOperationType.FINANCIAL_ADJUSTMENT,
+            entityType = "SUBLEDGER_ENTRY",
+            entityId = entryId,
+            relatedPartyType = entry.partyType,
+            relatedPartyId = entry.partyId,
+            reason = "Manual entry reversal",
+            beforeJson = JSONObject().put("isReversed", false).put("entryType", entry.entryType.name).toString(),
+            afterJson = JSONObject().put("isReversed", true).toString(),
+            operationReference = "${entry.referenceType}#${entry.referenceId}"
+          )
+        )
+      }
+    }
+  }
+
+  suspend fun reversePaymentTransaction(
+    entryId: Long,
+    reason: String,
+    advanceStrategy: AdvanceReversalStrategy = AdvanceReversalStrategy.BLOCK_IF_CONSUMED
+  ) = db.withTransaction {
+    val cleanReason = reason.trim()
+    require(cleanReason.isNotBlank()) { "Payment reversal reason is mandatory" }
+
+    val entry = subledgerDao.getByIdSync(entryId)
+      ?: throw IllegalArgumentException("Subledger payment entry #$entryId not found")
+    if (entry.isReversed) {
+      throw IllegalStateException("Payment entry #$entryId is already reversed")
+    }
+    require(entry.entryType == SubledgerEntryType.PAYMENT) {
+      "Only PAYMENT entries can be reversed through payment reversal (entry #${entry.id} is ${entry.entryType.displayName})"
+    }
+
+    val activeAllocations = allocationDao.getActiveForPaymentSync(entryId)
+    val consumedAdvances = activeAllocations.filter { it.isFromAdvanceConsumption }
+    if (consumedAdvances.isNotEmpty() && advanceStrategy == AdvanceReversalStrategy.BLOCK_IF_CONSUMED) {
+      val consumedTotal = consumedAdvances.sumOf { it.allocatedAmountPaise }
+      throw IllegalStateException(
+        "Payment #$entryId created an advance of ${SubledgerCalculationEngine.formatPaise(consumedTotal)} already applied to other dues. " +
+          "Reverse using 'Unapply Used Advance & Reverse' to reopen those invoices."
+      )
+    }
+
+    val now = System.currentTimeMillis()
+    val invoiceReductions = mutableMapOf<Long, Long>()
+
+    for (alloc in activeAllocations) {
+      allocationDao.markReversed(alloc.id, now, cleanReason)
+      if (alloc.allocationType == PaymentAllocationType.INVOICE && alloc.invoiceId != null) {
+        invoiceReductions[alloc.invoiceId] =
+          (invoiceReductions[alloc.invoiceId] ?: 0L) + alloc.allocatedAmountPaise
+      }
+    }
+
+    for ((invoiceId, reducedAmount) in invoiceReductions) {
+      if (entry.partyType == PartyType.CUSTOMER) {
+        val inv = salesDao.getById(invoiceId) ?: continue
+        val newPaid = (inv.paidAmountPaise - reducedAmount).coerceIn(0L, inv.totalAmountPaise)
+        val newStatus = when {
+          newPaid >= inv.totalAmountPaise && inv.totalAmountPaise > 0L -> PaymentStatus.PAID
+          newPaid > 0L -> PaymentStatus.PARTIALLY_PAID
+          else -> PaymentStatus.UNPAID
+        }
+        salesDao.update(
+          inv.copy(
+            paidAmountPaise = newPaid,
+            paymentStatus = newStatus,
+            updatedAt = now
+          )
+        )
+      } else {
+        val inv = purchaseDao.getById(invoiceId) ?: continue
+        val newPaid = (inv.paidAmountPaise - reducedAmount).coerceIn(0L, inv.totalAmountPaise)
+        val newStatus = when {
+          newPaid >= inv.totalAmountPaise && inv.totalAmountPaise > 0L -> PaymentStatus.PAID
+          newPaid > 0L -> PaymentStatus.PARTIALLY_PAID
+          else -> PaymentStatus.UNPAID
+        }
+        purchaseDao.update(
+          inv.copy(
+            paidAmountPaise = newPaid,
+            paymentStatus = newStatus,
+            updatedAt = now
+          )
+        )
+      }
+    }
+
+    subledgerDao.markReversed(entryId, now, cleanReason)
+
+    val beforeJson = JSONObject()
+      .put("paymentId", entryId)
+      .put("amountPaise", entry.debitPaise + entry.creditPaise)
+      .put("activeAllocationCount", activeAllocations.size)
+      .put("consumedAdvanceCount", consumedAdvances.size)
+      .toString()
+    val afterJson = JSONObject()
+      .put("paymentId", entryId)
+      .put("isReversed", true)
+      .put("strategy", advanceStrategy.name)
+      .put("affectedInvoicesCount", invoiceReductions.size)
+      .toString()
+
+    auditDao.insert(
+      FinancialAuditLogEntity(
+        operationType = AuditOperationType.PAYMENT_REVERSAL,
+        entityType = "PAYMENT",
+        entityId = entryId,
+        relatedPartyType = entry.partyType,
+        relatedPartyId = entry.partyId,
+        reason = cleanReason,
+        beforeJson = beforeJson,
+        afterJson = afterJson,
+        operationReference = "${entry.referenceType}#${entry.referenceId}",
+        createdAt = now
+      )
+    )
   }
 }
 
@@ -966,7 +1156,10 @@ class PurchaseRepository(private val db: IceTrackDatabase) {
     paymentMethod: PaymentMethod?,
     notes: String,
     applyAvailableAdvance: Boolean = true,
-    allowCreditLimitOverride: Boolean = false
+    allowCreditLimitOverride: Boolean = false,
+    discountType: DiscountType = DiscountType.NONE,
+    discountValueRaw: Long = 0L,
+    additionalChargesPaise: Long = 0L
   ): Long = db.withTransaction {
     val cleanInvoiceNumber = invoiceNumber.trim()
     require(cleanInvoiceNumber.isNotBlank()) { "Purchase invoice number cannot be blank" }
@@ -985,7 +1178,14 @@ class PurchaseRepository(private val db: IceTrackDatabase) {
       ?: throw IllegalArgumentException("Supplier #$supplierId not found")
     val effectiveDueDate = if (dueDate > 0L) dueDate else PaymentAllocationEngine.calculateDueDate(invoiceDate, supplier.creditTermsDays)
 
-    val totalAmountPaise = items.sumOf { it.lineTotalPaise }
+    val subtotalPaise = items.sumOf { it.lineTotalPaise }
+    val totals = SubledgerCalculationEngine.computeInvoiceTotals(
+      subtotalPaise = subtotalPaise,
+      discountType = discountType,
+      discountValueRaw = discountValueRaw,
+      additionalChargesPaise = additionalChargesPaise
+    )
+    val totalAmountPaise = totals.totalAmountPaise
 
     // Enforce supplier credit limit against current subledger payable + net unpaid credit exposure
     val existingEntries = subledgerDao.getEntriesForPartySync(PartyType.SUPPLIER, supplierId).map { it.toDomain() }
@@ -1018,6 +1218,7 @@ class PurchaseRepository(private val db: IceTrackDatabase) {
       else -> PaymentStatus.UNPAID
     }
 
+    val now = System.currentTimeMillis()
     // 1. Insert Purchase Invoice Header (paidAmountPaise never exceeds totalAmountPaise)
     val invoiceEntity = PurchaseInvoiceEntity(
       invoiceNumber = cleanInvoiceNumber,
@@ -1029,7 +1230,16 @@ class PurchaseRepository(private val db: IceTrackDatabase) {
       paymentStatus = paymentStatus,
       paymentMethod = paymentMethod,
       notes = notes,
-      isConfirmed = true
+      isConfirmed = true,
+      subtotalPaise = totals.subtotalPaise,
+      discountType = discountType,
+      discountValueRaw = discountValueRaw,
+      discountAmountPaise = totals.discountAmountPaise,
+      additionalChargesPaise = totals.additionalChargesPaise,
+      updatedAt = now,
+      partyNameSnapshot = supplier.name,
+      partyPhoneSnapshot = supplier.phoneNumber,
+      partyAddressSnapshot = supplier.address
     )
     val invoiceId = purchaseDao.insert(invoiceEntity)
 
@@ -1040,6 +1250,9 @@ class PurchaseRepository(private val db: IceTrackDatabase) {
 
     // 2. Insert Invoice Items and create inventory Batches + Movements
     for (item in items) {
+      val prodName = item.productNameSnapshot.ifBlank {
+        db.productDao().getProductSync(item.productId)?.name ?: "Product #${item.productId}"
+      }
       itemDao.insertAll(
         listOf(
           PurchaseInvoiceItemEntity(
@@ -1049,7 +1262,12 @@ class PurchaseRepository(private val db: IceTrackDatabase) {
             expiryDate = item.expiryDate,
             quantityPieces = item.quantityPieces,
             costPerPiecePaise = item.costPerPiecePaise,
-            lineTotalPaise = item.lineTotalPaise
+            lineTotalPaise = item.lineTotalPaise,
+            productNameSnapshot = prodName,
+            unitType = item.unitType,
+            unitQuantity = item.unitQuantity,
+            unitRatePaise = item.unitRatePaise,
+            itemDiscountPaise = item.itemDiscountPaise
           )
         )
       )
@@ -1118,7 +1336,8 @@ class PurchaseRepository(private val db: IceTrackDatabase) {
             invoiceId = invoiceId,
             allocatedAmountPaise = take,
             allocatedAt = invoiceDate,
-            notes = "Advance applied to Purchase #$cleanInvoiceNumber"
+            notes = "Advance applied to Purchase #$cleanInvoiceNumber",
+            isFromAdvanceConsumption = true
           )
         )
         val leftover = adv.allocatedAmountPaise - take
@@ -1132,7 +1351,8 @@ class PurchaseRepository(private val db: IceTrackDatabase) {
               invoiceId = null,
               allocatedAmountPaise = leftover,
               allocatedAt = invoiceDate,
-              notes = "Remaining advance after Purchase #$cleanInvoiceNumber"
+              notes = "Remaining advance after Purchase #$cleanInvoiceNumber",
+              isFromAdvanceConsumption = false
             )
           )
         }
@@ -1318,7 +1538,8 @@ class PurchaseRepository(private val db: IceTrackDatabase) {
           PaymentAllocationType.OPENING_BALANCE -> "Applied supplier advance to opening balance (Payment #${adv.paymentId})"
           PaymentAllocationType.ADVANCE -> alloc.notes
         }
-        allocationDao.insert(alloc.copy(notes = updatedNotes).toEntity())
+        val consumedFlag = alloc.allocationType != PaymentAllocationType.ADVANCE
+        allocationDao.insert(alloc.copy(notes = updatedNotes, isFromAdvanceConsumption = consumedFlag).toEntity())
       }
       for ((invId, addedPaid) in result.invoiceAdditionalPaidPaise) {
         if (addedPaid <= 0L) continue
@@ -1366,7 +1587,11 @@ class SalesRepository(private val db: IceTrackDatabase) {
   data class RequestedSaleLine(
     val productId: Long,
     val quantityPieces: Int,
-    val unitPricePaise: Long
+    val unitPricePaise: Long,
+    val unitType: UnitType = UnitType.PIECE,
+    val unitQuantity: Int = quantityPieces,
+    val unitRatePaise: Long = unitPricePaise,
+    val itemDiscountPaise: Long = 0L
   )
 
   suspend fun generateNextInvoiceNumber(nowMillis: Long = System.currentTimeMillis()): String {
@@ -1397,7 +1622,10 @@ class SalesRepository(private val db: IceTrackDatabase) {
     notes: String,
     allowExpired: Boolean = false,
     applyAvailableAdvance: Boolean = true,
-    allowCreditLimitOverride: Boolean = false
+    allowCreditLimitOverride: Boolean = false,
+    discountType: DiscountType = DiscountType.NONE,
+    discountValueRaw: Long = 0L,
+    additionalChargesPaise: Long = 0L
   ): Long = db.withTransaction {
     val cleanInvoiceNumber = invoiceNumber.trim()
     require(cleanInvoiceNumber.isNotBlank()) { "Sales invoice number cannot be blank" }
@@ -1419,9 +1647,11 @@ class SalesRepository(private val db: IceTrackDatabase) {
     // so duplicate product lines in the same invoice cannot double-allocate or oversell a batch.
     val itemsToInsert = mutableListOf<PreparedSaleDispatchLine>()
     val remainingBatchPieces = mutableMapOf<Long, Int>()
-    var totalAmountPaise = 0L
+    var subtotalPaise = 0L
 
     for (line in requestedLines) {
+      val prod = db.productDao().getProductSync(line.productId)
+      val prodName = prod?.name ?: "Product #${line.productId}"
       val availableBatches = batchDao.getActiveBatchesForProductSync(line.productId).map { entity ->
         val effectiveQty = remainingBatchPieces.getOrPut(entity.id) { entity.currentQuantityPieces }
         entity.toDomain().copy(currentQuantityPieces = effectiveQty)
@@ -1434,19 +1664,24 @@ class SalesRepository(private val db: IceTrackDatabase) {
       )
 
       if (fefoResult.remainingUnfulfilledPieces > 0) {
-        val prod = db.productDao().getProductSync(line.productId)
         throw IllegalStateException(
-          "Insufficient stock for '${prod?.name ?: "Product #${line.productId}"}'. " +
+          "Insufficient stock for '$prodName'. " +
           "Requested: ${line.quantityPieces} pcs, available in non-expired batches: ${fefoResult.fulfilledPieces} pcs."
         )
       }
 
-      for (alloc in fefoResult.allocations) {
+      var lineItemDiscountRemaining = line.itemDiscountPaise
+      fefoResult.allocations.forEachIndexed { idx, alloc ->
         val currentLeft = remainingBatchPieces[alloc.batch.id] ?: alloc.batch.currentQuantityPieces
         remainingBatchPieces[alloc.batch.id] = currentLeft - alloc.quantityPiecesToIssue
 
-        val lineTotal = alloc.quantityPiecesToIssue.toLong() * line.unitPricePaise
-        totalAmountPaise += lineTotal
+        val rawLineTotal = alloc.quantityPiecesToIssue.toLong() * line.unitPricePaise
+        val sliceDiscount = if (idx == fefoResult.allocations.lastIndex) {
+          lineItemDiscountRemaining.coerceAtMost(rawLineTotal)
+        } else 0L
+        lineItemDiscountRemaining -= sliceDiscount
+        val lineTotal = (rawLineTotal - sliceDiscount).coerceAtLeast(0L)
+        subtotalPaise += lineTotal
         itemsToInsert.add(
           PreparedSaleDispatchLine(
             item = SalesInvoiceItemEntity(
@@ -1455,13 +1690,26 @@ class SalesRepository(private val db: IceTrackDatabase) {
               batchId = alloc.batch.id,
               quantityPieces = alloc.quantityPiecesToIssue,
               unitPricePaise = line.unitPricePaise,
-              lineTotalPaise = lineTotal
+              lineTotalPaise = lineTotal,
+              productNameSnapshot = prodName,
+              unitType = line.unitType,
+              unitQuantity = if (idx == 0 && fefoResult.allocations.size == 1) line.unitQuantity else alloc.quantityPiecesToIssue,
+              unitRatePaise = if (idx == 0 && fefoResult.allocations.size == 1) line.unitRatePaise else line.unitPricePaise,
+              itemDiscountPaise = sliceDiscount
             ),
             unitPurchaseCostPaise = alloc.batch.purchaseCostPerPiecePaise
           )
         )
       }
     }
+
+    val totals = SubledgerCalculationEngine.computeInvoiceTotals(
+      subtotalPaise = subtotalPaise,
+      discountType = discountType,
+      discountValueRaw = discountValueRaw,
+      additionalChargesPaise = additionalChargesPaise
+    )
+    val totalAmountPaise = totals.totalAmountPaise
 
     // Enforce customer credit limit against current subledger receivable + net unpaid exposure
     val existingEntries = subledgerDao.getEntriesForPartySync(PartyType.CUSTOMER, customerId).map { it.toDomain() }
@@ -1494,6 +1742,7 @@ class SalesRepository(private val db: IceTrackDatabase) {
       else -> PaymentStatus.UNPAID
     }
 
+    val now = System.currentTimeMillis()
     // 2. Insert Sales Invoice Header (paidAmountPaise strictly capped <= totalAmountPaise)
     val headerEntity = SalesInvoiceEntity(
       invoiceNumber = cleanInvoiceNumber,
@@ -1505,7 +1754,16 @@ class SalesRepository(private val db: IceTrackDatabase) {
       paymentStatus = paymentStatus,
       paymentMethod = paymentMethod,
       notes = notes,
-      isConfirmed = true
+      isConfirmed = true,
+      subtotalPaise = totals.subtotalPaise,
+      discountType = discountType,
+      discountValueRaw = discountValueRaw,
+      discountAmountPaise = totals.discountAmountPaise,
+      additionalChargesPaise = totals.additionalChargesPaise,
+      updatedAt = now,
+      partyNameSnapshot = customer.shopName,
+      partyPhoneSnapshot = customer.phoneNumber,
+      partyAddressSnapshot = customer.address
     )
     val invoiceId = salesDao.insert(headerEntity)
 
@@ -1575,7 +1833,8 @@ class SalesRepository(private val db: IceTrackDatabase) {
             invoiceId = invoiceId,
             allocatedAmountPaise = take,
             allocatedAt = invoiceDate,
-            notes = "Advance applied to Sale #$cleanInvoiceNumber"
+            notes = "Advance applied to Sale #$cleanInvoiceNumber",
+            isFromAdvanceConsumption = true
           )
         )
         val leftover = adv.allocatedAmountPaise - take
@@ -1589,7 +1848,8 @@ class SalesRepository(private val db: IceTrackDatabase) {
               invoiceId = null,
               allocatedAmountPaise = leftover,
               allocatedAt = invoiceDate,
-              notes = "Remaining advance after Sale #$cleanInvoiceNumber"
+              notes = "Remaining advance after Sale #$cleanInvoiceNumber",
+              isFromAdvanceConsumption = false
             )
           )
         }
@@ -1775,7 +2035,8 @@ class SalesRepository(private val db: IceTrackDatabase) {
           PaymentAllocationType.OPENING_BALANCE -> "Applied customer advance to opening balance (Payment #${adv.paymentId})"
           PaymentAllocationType.ADVANCE -> alloc.notes
         }
-        allocationDao.insert(alloc.copy(notes = updatedNotes).toEntity())
+        val consumedFlag = alloc.allocationType != PaymentAllocationType.ADVANCE
+        allocationDao.insert(alloc.copy(notes = updatedNotes, isFromAdvanceConsumption = consumedFlag).toEntity())
       }
       for ((invId, addedPaid) in result.invoiceAdditionalPaidPaise) {
         if (addedPaid <= 0L) continue
@@ -1939,7 +2200,10 @@ fun SubledgerEntryEntity.toDomain() = SubledgerEntry(
   entryDate = entryDate,
   createdAt = createdAt,
   notes = notes,
-  isReversed = isReversed
+  isReversed = isReversed,
+  operationRef = operationRef,
+  reversedAt = reversedAt,
+  reversalReason = reversalReason
 )
 
 fun SubledgerEntry.toEntity() = SubledgerEntryEntity(
@@ -1954,7 +2218,10 @@ fun SubledgerEntry.toEntity() = SubledgerEntryEntity(
   entryDate = entryDate,
   createdAt = createdAt,
   notes = notes,
-  isReversed = isReversed
+  isReversed = isReversed,
+  operationRef = operationRef,
+  reversedAt = reversedAt,
+  reversalReason = reversalReason
 )
 
 fun PaymentAllocationEntity.toDomain() = PaymentAllocation(
@@ -1967,7 +2234,10 @@ fun PaymentAllocationEntity.toDomain() = PaymentAllocation(
   allocatedAmountPaise = allocatedAmountPaise,
   allocatedAt = allocatedAt,
   notes = notes,
-  isReversed = isReversed
+  isReversed = isReversed,
+  isFromAdvanceConsumption = isFromAdvanceConsumption,
+  reversedAt = reversedAt,
+  reversalReason = reversalReason
 )
 
 fun PaymentAllocation.toEntity() = PaymentAllocationEntity(
@@ -1980,7 +2250,10 @@ fun PaymentAllocation.toEntity() = PaymentAllocationEntity(
   allocatedAmountPaise = allocatedAmountPaise,
   allocatedAt = allocatedAt,
   notes = notes,
-  isReversed = isReversed
+  isReversed = isReversed,
+  isFromAdvanceConsumption = isFromAdvanceConsumption,
+  reversedAt = reversedAt,
+  reversalReason = reversalReason
 )
 
 fun ProductBatchEntity.toDomain() = ProductBatch(
@@ -2023,7 +2296,20 @@ fun PurchaseInvoiceEntity.toDomain() = PurchaseInvoice(
   paymentMethod = paymentMethod,
   notes = notes,
   isConfirmed = isConfirmed,
-  createdAt = createdAt
+  createdAt = createdAt,
+  subtotalPaise = subtotalPaise,
+  discountType = discountType,
+  discountValueRaw = discountValueRaw,
+  discountAmountPaise = discountAmountPaise,
+  additionalChargesPaise = additionalChargesPaise,
+  invoiceStatus = invoiceStatus,
+  cancelledAt = cancelledAt,
+  cancellationReason = cancellationReason,
+  revisionVersion = revisionVersion,
+  updatedAt = updatedAt,
+  partyNameSnapshot = partyNameSnapshot,
+  partyPhoneSnapshot = partyPhoneSnapshot,
+  partyAddressSnapshot = partyAddressSnapshot
 )
 
 fun PurchaseInvoiceItemEntity.toDomain() = PurchaseInvoiceItem(
@@ -2034,7 +2320,12 @@ fun PurchaseInvoiceItemEntity.toDomain() = PurchaseInvoiceItem(
   expiryDate = expiryDate,
   quantityPieces = quantityPieces,
   costPerPiecePaise = costPerPiecePaise,
-  lineTotalPaise = lineTotalPaise
+  lineTotalPaise = lineTotalPaise,
+  productNameSnapshot = productNameSnapshot,
+  unitType = unitType,
+  unitQuantity = unitQuantity,
+  unitRatePaise = unitRatePaise,
+  itemDiscountPaise = itemDiscountPaise
 )
 
 fun SalesInvoiceEntity.toDomain() = SalesInvoice(
@@ -2049,7 +2340,20 @@ fun SalesInvoiceEntity.toDomain() = SalesInvoice(
   paymentMethod = paymentMethod,
   notes = notes,
   isConfirmed = isConfirmed,
-  createdAt = createdAt
+  createdAt = createdAt,
+  subtotalPaise = subtotalPaise,
+  discountType = discountType,
+  discountValueRaw = discountValueRaw,
+  discountAmountPaise = discountAmountPaise,
+  additionalChargesPaise = additionalChargesPaise,
+  invoiceStatus = invoiceStatus,
+  cancelledAt = cancelledAt,
+  cancellationReason = cancellationReason,
+  revisionVersion = revisionVersion,
+  updatedAt = updatedAt,
+  partyNameSnapshot = partyNameSnapshot,
+  partyPhoneSnapshot = partyPhoneSnapshot,
+  partyAddressSnapshot = partyAddressSnapshot
 )
 
 fun SalesInvoiceItemEntity.toDomain() = SalesInvoiceItem(
@@ -2059,7 +2363,12 @@ fun SalesInvoiceItemEntity.toDomain() = SalesInvoiceItem(
   batchId = batchId,
   quantityPieces = quantityPieces,
   unitPricePaise = unitPricePaise,
-  lineTotalPaise = lineTotalPaise
+  lineTotalPaise = lineTotalPaise,
+  productNameSnapshot = productNameSnapshot,
+  unitType = unitType,
+  unitQuantity = unitQuantity,
+  unitRatePaise = unitRatePaise,
+  itemDiscountPaise = itemDiscountPaise
 )
 
 fun ExpenseEntity.toDomain() = Expense(

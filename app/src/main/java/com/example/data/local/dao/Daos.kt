@@ -7,11 +7,13 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Update
 import com.example.data.local.entity.AppSettingEntity
+import com.example.data.local.entity.CreditDebitNoteEntity
 import com.example.data.local.entity.CustomerEntity
 import com.example.data.local.entity.CustomerPaymentReminderEntity
 import com.example.data.local.entity.CustomerPaymentReminderInvoiceEntity
 import com.example.data.local.entity.CustomerProductPriceEntity
 import com.example.data.local.entity.ExpenseEntity
+import com.example.data.local.entity.FinancialAuditLogEntity
 import com.example.data.local.entity.PaymentAllocationEntity
 import com.example.data.local.entity.ProductBatchEntity
 import com.example.data.local.entity.ProductEntity
@@ -19,13 +21,20 @@ import com.example.data.local.entity.ProductSupplierEntity
 import com.example.data.local.entity.ProductUnitEntity
 import com.example.data.local.entity.PurchaseInvoiceEntity
 import com.example.data.local.entity.PurchaseInvoiceItemEntity
+import com.example.data.local.entity.PurchaseReturnEntity
+import com.example.data.local.entity.PurchaseReturnItemEntity
+import com.example.data.local.entity.RefundRecordEntity
 import com.example.data.local.entity.SalesInvoiceEntity
 import com.example.data.local.entity.SalesInvoiceItemEntity
+import com.example.data.local.entity.SalesReturnEntity
+import com.example.data.local.entity.SalesReturnItemEntity
 import com.example.data.local.entity.StockMovementEntity
 import com.example.data.local.entity.SubledgerEntryEntity
 import com.example.data.local.entity.SupplierEntity
+import com.example.domain.model.NoteStatus
 import com.example.domain.model.PartyType
 import com.example.domain.model.PaymentAllocationType
+import com.example.domain.model.RefundExecutionStatus
 import com.example.domain.model.SubledgerEntryType
 import kotlinx.coroutines.flow.Flow
 
@@ -57,6 +66,9 @@ interface ProductDao {
 
   @Query("UPDATE products SET isActive = 0, deletedAt = :deletedAt WHERE id = :id")
   suspend fun softDelete(id: Long, deletedAt: Long = System.currentTimeMillis())
+
+  @Query("SELECT * FROM products ORDER BY id ASC")
+  suspend fun getAllIncludingArchivedSync(): List<ProductEntity>
 }
 
 @Dao
@@ -69,6 +81,9 @@ interface ProductUnitDao {
 
   @Insert(onConflict = OnConflictStrategy.REPLACE)
   suspend fun insertOrUpdate(unit: ProductUnitEntity): Long
+
+  @Query("SELECT * FROM product_units ORDER BY id ASC")
+  suspend fun getAllSync(): List<ProductUnitEntity>
 }
 
 @Dao
@@ -90,6 +105,9 @@ interface ProductSupplierDao {
 
   @Delete
   suspend fun delete(relation: ProductSupplierEntity)
+
+  @Query("SELECT * FROM product_suppliers ORDER BY id ASC")
+  suspend fun getAllSync(): List<ProductSupplierEntity>
 }
 
 @Dao
@@ -120,6 +138,9 @@ interface SupplierDao {
 
   @Query("UPDATE suppliers SET isActive = 0, deletedAt = :deletedAt WHERE id = :id")
   suspend fun softDelete(id: Long, deletedAt: Long = System.currentTimeMillis())
+
+  @Query("SELECT * FROM suppliers ORDER BY id ASC")
+  suspend fun getAllIncludingArchivedSync(): List<SupplierEntity>
 }
 
 @Dao
@@ -150,6 +171,9 @@ interface CustomerDao {
 
   @Query("UPDATE customers SET isActive = 0, deletedAt = :deletedAt WHERE id = :id")
   suspend fun softDelete(id: Long, deletedAt: Long = System.currentTimeMillis())
+
+  @Query("SELECT * FROM customers ORDER BY id ASC")
+  suspend fun getAllIncludingArchivedSync(): List<CustomerEntity>
 }
 
 @Dao
@@ -171,6 +195,9 @@ interface CustomerProductPriceDao {
 
   @Query("DELETE FROM customer_product_prices WHERE customerId = :customerId")
   suspend fun deleteAllForCustomer(customerId: Long)
+
+  @Query("SELECT * FROM customer_product_prices ORDER BY id ASC")
+  suspend fun getAllSync(): List<CustomerProductPriceEntity>
 }
 
 @Dao
@@ -191,11 +218,24 @@ interface SubledgerDao {
   @Query("SELECT * FROM subledger_entries ORDER BY entryDate DESC, id DESC")
   fun getAllEntries(): Flow<List<SubledgerEntryEntity>>
 
+  @Query("SELECT * FROM subledger_entries ORDER BY id ASC")
+  suspend fun getAllEntriesSync(): List<SubledgerEntryEntity>
+
+  @Query("SELECT * FROM subledger_entries WHERE id = :id LIMIT 1")
+  suspend fun getByIdSync(id: Long): SubledgerEntryEntity?
+
+  @Query("SELECT * FROM subledger_entries WHERE referenceType = :referenceType AND referenceId = :referenceId AND isReversed = 0 ORDER BY id ASC")
+  suspend fun getActiveByReferenceSync(referenceType: String, referenceId: Long): List<SubledgerEntryEntity>
+
   @Insert(onConflict = OnConflictStrategy.ABORT)
   suspend fun insert(entry: SubledgerEntryEntity): Long
 
-  @Query("UPDATE subledger_entries SET isReversed = 1 WHERE id = :id")
-  suspend fun markReversed(id: Long)
+  @Query("UPDATE subledger_entries SET isReversed = 1, reversedAt = :reversedAt, reversalReason = :reversalReason WHERE id = :id")
+  suspend fun markReversed(
+    id: Long,
+    reversedAt: Long = System.currentTimeMillis(),
+    reversalReason: String = ""
+  )
 }
 
 @Dao
@@ -205,6 +245,9 @@ interface PaymentAllocationDao {
 
   @Query("SELECT * FROM payment_allocations WHERE paymentId = :paymentId AND isReversed = 0 ORDER BY allocatedAt ASC, id ASC")
   suspend fun getActiveForPaymentSync(paymentId: Long): List<PaymentAllocationEntity>
+
+  @Query("SELECT * FROM payment_allocations WHERE paymentId = :paymentId AND isReversed = 0 AND isFromAdvanceConsumption = 1 ORDER BY allocatedAt ASC, id ASC")
+  suspend fun getConsumedAdvanceAllocationsForPaymentSync(paymentId: Long): List<PaymentAllocationEntity>
 
   @Query("SELECT * FROM payment_allocations WHERE partyType = :partyType AND invoiceId = :invoiceId AND allocationType = 'INVOICE' AND isReversed = 0")
   fun getForInvoice(partyType: PartyType, invoiceId: Long): Flow<List<PaymentAllocationEntity>>
@@ -237,11 +280,18 @@ interface PaymentAllocationDao {
   @Query("SELECT * FROM payment_allocations WHERE partyType = :partyType AND partyId = :partyId ORDER BY allocatedAt DESC, id DESC")
   fun getAllIncludingReversedForParty(partyType: PartyType, partyId: Long): Flow<List<PaymentAllocationEntity>>
 
+  @Query("SELECT * FROM payment_allocations ORDER BY id ASC")
+  suspend fun getAllSync(): List<PaymentAllocationEntity>
+
   @Insert(onConflict = OnConflictStrategy.ABORT)
   suspend fun insert(allocation: PaymentAllocationEntity): Long
 
-  @Query("UPDATE payment_allocations SET isReversed = 1 WHERE id = :id")
-  suspend fun markReversed(id: Long)
+  @Query("UPDATE payment_allocations SET isReversed = 1, reversedAt = :reversedAt, reversalReason = :reversalReason WHERE id = :id")
+  suspend fun markReversed(
+    id: Long,
+    reversedAt: Long = System.currentTimeMillis(),
+    reversalReason: String = ""
+  )
 }
 
 @Dao
@@ -257,6 +307,9 @@ interface AppSettingDao {
 
   @Query("SELECT * FROM app_settings")
   fun getAll(): Flow<List<AppSettingEntity>>
+
+  @Query("SELECT * FROM app_settings ORDER BY `key` ASC")
+  suspend fun getAllSync(): List<AppSettingEntity>
 }
 
 // ==========================================
@@ -279,6 +332,12 @@ interface ProductBatchDao {
 
   @Query("SELECT * FROM product_batches ORDER BY expiryDate ASC, purchaseDate ASC")
   fun getAllBatchesIncludingInactive(): Flow<List<ProductBatchEntity>>
+
+  @Query("SELECT * FROM product_batches ORDER BY id ASC")
+  suspend fun getAllBatchesSync(): List<ProductBatchEntity>
+
+  @Query("SELECT * FROM product_batches WHERE purchaseInvoiceId = :purchaseInvoiceId ORDER BY id ASC")
+  suspend fun getBatchesByPurchaseInvoiceSync(purchaseInvoiceId: Long): List<ProductBatchEntity>
 
   @Query("SELECT * FROM product_batches WHERE id = :batchId")
   suspend fun getById(batchId: Long): ProductBatchEntity?
@@ -304,6 +363,9 @@ interface StockMovementDao {
   @Query("SELECT * FROM stock_movements ORDER BY movementDate DESC, id DESC LIMIT :limit")
   fun getRecentMovements(limit: Int = 100): Flow<List<StockMovementEntity>>
 
+  @Query("SELECT * FROM stock_movements ORDER BY id ASC")
+  suspend fun getAllSync(): List<StockMovementEntity>
+
   @Insert(onConflict = OnConflictStrategy.ABORT)
   suspend fun insert(movement: StockMovementEntity): Long
 }
@@ -313,13 +375,19 @@ interface PurchaseInvoiceDao {
   @Query("SELECT * FROM purchase_invoices ORDER BY invoiceDate DESC, id DESC")
   fun getAll(): Flow<List<PurchaseInvoiceEntity>>
 
+  @Query("SELECT * FROM purchase_invoices WHERE invoiceStatus = 'ACTIVE' ORDER BY invoiceDate DESC, id DESC")
+  fun getAllActive(): Flow<List<PurchaseInvoiceEntity>>
+
+  @Query("SELECT * FROM purchase_invoices ORDER BY id ASC")
+  suspend fun getAllSync(): List<PurchaseInvoiceEntity>
+
   @Query("SELECT * FROM purchase_invoices WHERE supplierId = :supplierId ORDER BY invoiceDate DESC, id DESC")
   fun getForSupplier(supplierId: Long): Flow<List<PurchaseInvoiceEntity>>
 
   @Query("SELECT * FROM purchase_invoices WHERE id = :id")
   suspend fun getById(id: Long): PurchaseInvoiceEntity?
 
-  @Query("SELECT * FROM purchase_invoices WHERE supplierId = :supplierId AND paymentStatus != 'PAID' ORDER BY invoiceDate ASC, id ASC")
+  @Query("SELECT * FROM purchase_invoices WHERE supplierId = :supplierId AND invoiceStatus = 'ACTIVE' AND paymentStatus != 'PAID' ORDER BY invoiceDate ASC, id ASC")
   suspend fun getUnpaidForSupplier(supplierId: Long): List<PurchaseInvoiceEntity>
 
   @Query("SELECT COUNT(*) FROM purchase_invoices")
@@ -327,6 +395,9 @@ interface PurchaseInvoiceDao {
 
   @Query("SELECT COUNT(*) FROM purchase_invoices WHERE invoiceNumber = :invoiceNumber")
   suspend fun existsByInvoiceNumber(invoiceNumber: String): Int
+
+  @Query("SELECT COUNT(*) FROM purchase_invoices WHERE invoiceNumber = :invoiceNumber AND id != :excludeId")
+  suspend fun existsByInvoiceNumberExcludingId(invoiceNumber: String, excludeId: Long): Int
 
   @Insert(onConflict = OnConflictStrategy.ABORT)
   suspend fun insert(invoice: PurchaseInvoiceEntity): Long
@@ -343,8 +414,14 @@ interface PurchaseInvoiceItemDao {
   @Query("SELECT * FROM purchase_invoice_items WHERE purchaseInvoiceId = :invoiceId")
   suspend fun getItemsForInvoiceSync(invoiceId: Long): List<PurchaseInvoiceItemEntity>
 
+  @Query("SELECT * FROM purchase_invoice_items ORDER BY id ASC")
+  suspend fun getAllItemsSync(): List<PurchaseInvoiceItemEntity>
+
   @Insert(onConflict = OnConflictStrategy.ABORT)
   suspend fun insertAll(items: List<PurchaseInvoiceItemEntity>)
+
+  @Query("DELETE FROM purchase_invoice_items WHERE purchaseInvoiceId = :invoiceId")
+  suspend fun deleteForInvoice(invoiceId: Long)
 }
 
 @Dao
@@ -352,13 +429,19 @@ interface SalesInvoiceDao {
   @Query("SELECT * FROM sales_invoices ORDER BY invoiceDate DESC, id DESC")
   fun getAll(): Flow<List<SalesInvoiceEntity>>
 
+  @Query("SELECT * FROM sales_invoices WHERE invoiceStatus = 'ACTIVE' ORDER BY invoiceDate DESC, id DESC")
+  fun getAllActive(): Flow<List<SalesInvoiceEntity>>
+
+  @Query("SELECT * FROM sales_invoices ORDER BY id ASC")
+  suspend fun getAllSync(): List<SalesInvoiceEntity>
+
   @Query("SELECT * FROM sales_invoices WHERE customerId = :customerId ORDER BY invoiceDate DESC, id DESC")
   fun getForCustomer(customerId: Long): Flow<List<SalesInvoiceEntity>>
 
   @Query("SELECT * FROM sales_invoices WHERE id = :id")
   suspend fun getById(id: Long): SalesInvoiceEntity?
 
-  @Query("SELECT * FROM sales_invoices WHERE customerId = :customerId AND paymentStatus != 'PAID' ORDER BY invoiceDate ASC, id ASC")
+  @Query("SELECT * FROM sales_invoices WHERE customerId = :customerId AND invoiceStatus = 'ACTIVE' AND paymentStatus != 'PAID' ORDER BY invoiceDate ASC, id ASC")
   suspend fun getUnpaidForCustomer(customerId: Long): List<SalesInvoiceEntity>
 
   @Query("SELECT COUNT(*) FROM sales_invoices")
@@ -366,6 +449,9 @@ interface SalesInvoiceDao {
 
   @Query("SELECT COUNT(*) FROM sales_invoices WHERE invoiceNumber = :invoiceNumber")
   suspend fun existsByInvoiceNumber(invoiceNumber: String): Int
+
+  @Query("SELECT COUNT(*) FROM sales_invoices WHERE invoiceNumber = :invoiceNumber AND id != :excludeId")
+  suspend fun existsByInvoiceNumberExcludingId(invoiceNumber: String, excludeId: Long): Int
 
   @Insert(onConflict = OnConflictStrategy.ABORT)
   suspend fun insert(invoice: SalesInvoiceEntity): Long
@@ -390,12 +476,18 @@ interface SalesInvoiceItemDao {
 
   @Insert(onConflict = OnConflictStrategy.ABORT)
   suspend fun insertAll(items: List<SalesInvoiceItemEntity>)
+
+  @Query("DELETE FROM sales_invoice_items WHERE salesInvoiceId = :invoiceId")
+  suspend fun deleteForInvoice(invoiceId: Long)
 }
 
 @Dao
 interface ExpenseDao {
   @Query("SELECT * FROM expenses WHERE deletedAt IS NULL ORDER BY expenseDate DESC, id DESC")
   fun getAllActive(): Flow<List<ExpenseEntity>>
+
+  @Query("SELECT * FROM expenses ORDER BY id ASC")
+  suspend fun getAllIncludingDeletedSync(): List<ExpenseEntity>
 
   @Query("SELECT * FROM expenses WHERE deletedAt IS NULL AND expenseDate BETWEEN :startDate AND :endDate ORDER BY expenseDate DESC")
   fun getExpensesBetween(startDate: Long, endDate: Long): Flow<List<ExpenseEntity>>
@@ -414,6 +506,12 @@ interface ExpenseDao {
 interface CustomerPaymentReminderDao {
   @Query("SELECT * FROM customer_payment_reminders ORDER BY createdAt DESC, id DESC")
   fun observeAll(): Flow<List<CustomerPaymentReminderEntity>>
+
+  @Query("SELECT * FROM customer_payment_reminders ORDER BY id ASC")
+  suspend fun getAllRemindersSync(): List<CustomerPaymentReminderEntity>
+
+  @Query("SELECT * FROM customer_payment_reminder_invoices ORDER BY id ASC")
+  suspend fun getAllReminderInvoicesSync(): List<CustomerPaymentReminderInvoiceEntity>
 
   @Query("SELECT * FROM customer_payment_reminders WHERE customerId = :customerId ORDER BY createdAt DESC, id DESC")
   fun observeHistoryForCustomer(customerId: Long): Flow<List<CustomerPaymentReminderEntity>>
@@ -439,4 +537,207 @@ interface CustomerPaymentReminderDao {
   @Update
   suspend fun updateReminder(reminder: CustomerPaymentReminderEntity)
 }
+
+// ==========================================
+// Phase 3 DAOs
+// ==========================================
+
+@Dao
+interface SalesReturnDao {
+  @Query("SELECT * FROM sales_returns ORDER BY returnDate DESC, id DESC")
+  fun observeAll(): Flow<List<SalesReturnEntity>>
+
+  @Query("SELECT * FROM sales_returns WHERE salesInvoiceId = :invoiceId ORDER BY returnDate DESC, id DESC")
+  fun observeForInvoice(invoiceId: Long): Flow<List<SalesReturnEntity>>
+
+  @Query("SELECT * FROM sales_returns WHERE salesInvoiceId = :invoiceId ORDER BY id ASC")
+  suspend fun getForInvoiceSync(invoiceId: Long): List<SalesReturnEntity>
+
+  @Query("SELECT * FROM sales_returns WHERE idempotencyKey = :key LIMIT 1")
+  suspend fun getByIdempotencyKey(key: String): SalesReturnEntity?
+
+  @Query("SELECT * FROM sales_returns WHERE id = :id LIMIT 1")
+  suspend fun getByIdSync(id: Long): SalesReturnEntity?
+
+  @Query("SELECT * FROM sales_returns ORDER BY id ASC")
+  suspend fun getAllSync(): List<SalesReturnEntity>
+
+  @Query("SELECT * FROM sales_return_items ORDER BY id ASC")
+  fun observeAllItems(): Flow<List<SalesReturnItemEntity>>
+
+  @Query("SELECT * FROM sales_return_items ORDER BY id ASC")
+  suspend fun getAllItemsSync(): List<SalesReturnItemEntity>
+
+  @Query("SELECT * FROM sales_return_items WHERE salesReturnId = :returnId ORDER BY id ASC")
+  suspend fun getItemsForReturnSync(returnId: Long): List<SalesReturnItemEntity>
+
+  @Query(
+    """
+    SELECT sri.* FROM sales_return_items sri
+    INNER JOIN sales_returns sr ON sr.id = sri.salesReturnId
+    WHERE sr.salesInvoiceId = :invoiceId
+    ORDER BY sri.id ASC
+    """
+  )
+  suspend fun getReturnedItemsForInvoiceSync(invoiceId: Long): List<SalesReturnItemEntity>
+
+  @Query("SELECT COUNT(*) FROM sales_returns")
+  suspend fun countReturns(): Int
+
+  @Query("SELECT COUNT(*) FROM sales_returns WHERE returnNumber = :returnNumber")
+  suspend fun existsByReturnNumber(returnNumber: String): Int
+
+  @Insert(onConflict = OnConflictStrategy.ABORT)
+  suspend fun insertReturn(ret: SalesReturnEntity): Long
+
+  @Insert(onConflict = OnConflictStrategy.ABORT)
+  suspend fun insertItems(items: List<SalesReturnItemEntity>)
+
+  @Update
+  suspend fun updateReturn(ret: SalesReturnEntity)
+}
+
+@Dao
+interface PurchaseReturnDao {
+  @Query("SELECT * FROM purchase_returns ORDER BY returnDate DESC, id DESC")
+  fun observeAll(): Flow<List<PurchaseReturnEntity>>
+
+  @Query("SELECT * FROM purchase_returns WHERE purchaseInvoiceId = :invoiceId ORDER BY returnDate DESC, id DESC")
+  fun observeForInvoice(invoiceId: Long): Flow<List<PurchaseReturnEntity>>
+
+  @Query("SELECT * FROM purchase_returns WHERE purchaseInvoiceId = :invoiceId ORDER BY id ASC")
+  suspend fun getForInvoiceSync(invoiceId: Long): List<PurchaseReturnEntity>
+
+  @Query("SELECT * FROM purchase_returns WHERE idempotencyKey = :key LIMIT 1")
+  suspend fun getByIdempotencyKey(key: String): PurchaseReturnEntity?
+
+  @Query("SELECT * FROM purchase_returns WHERE id = :id LIMIT 1")
+  suspend fun getByIdSync(id: Long): PurchaseReturnEntity?
+
+  @Query("SELECT * FROM purchase_returns ORDER BY id ASC")
+  suspend fun getAllSync(): List<PurchaseReturnEntity>
+
+  @Query("SELECT * FROM purchase_return_items ORDER BY id ASC")
+  suspend fun getAllItemsSync(): List<PurchaseReturnItemEntity>
+
+  @Query("SELECT * FROM purchase_return_items WHERE purchaseReturnId = :returnId ORDER BY id ASC")
+  suspend fun getItemsForReturnSync(returnId: Long): List<PurchaseReturnItemEntity>
+
+  @Query(
+    """
+    SELECT pri.* FROM purchase_return_items pri
+    INNER JOIN purchase_returns pr ON pr.id = pri.purchaseReturnId
+    WHERE pr.purchaseInvoiceId = :invoiceId
+    ORDER BY pri.id ASC
+    """
+  )
+  suspend fun getReturnedItemsForInvoiceSync(invoiceId: Long): List<PurchaseReturnItemEntity>
+
+  @Query("SELECT COUNT(*) FROM purchase_returns")
+  suspend fun countReturns(): Int
+
+  @Query("SELECT COUNT(*) FROM purchase_returns WHERE returnNumber = :returnNumber")
+  suspend fun existsByReturnNumber(returnNumber: String): Int
+
+  @Insert(onConflict = OnConflictStrategy.ABORT)
+  suspend fun insertReturn(ret: PurchaseReturnEntity): Long
+
+  @Insert(onConflict = OnConflictStrategy.ABORT)
+  suspend fun insertItems(items: List<PurchaseReturnItemEntity>)
+
+  @Update
+  suspend fun updateReturn(ret: PurchaseReturnEntity)
+}
+
+@Dao
+interface CreditDebitNoteDao {
+  @Query("SELECT * FROM credit_debit_notes ORDER BY issueDate DESC, id DESC")
+  fun observeAll(): Flow<List<CreditDebitNoteEntity>>
+
+  @Query("SELECT * FROM credit_debit_notes WHERE partyType = :partyType AND partyId = :partyId ORDER BY issueDate DESC, id DESC")
+  fun observeForParty(partyType: PartyType, partyId: Long): Flow<List<CreditDebitNoteEntity>>
+
+  @Query("SELECT * FROM credit_debit_notes WHERE linkedInvoiceId = :invoiceId AND partyType = :partyType ORDER BY issueDate DESC, id DESC")
+  suspend fun getForInvoiceSync(partyType: PartyType, invoiceId: Long): List<CreditDebitNoteEntity>
+
+  @Query("SELECT * FROM credit_debit_notes WHERE id = :id LIMIT 1")
+  suspend fun getByIdSync(id: Long): CreditDebitNoteEntity?
+
+  @Query("SELECT * FROM credit_debit_notes WHERE idempotencyKey = :key LIMIT 1")
+  suspend fun getByIdempotencyKey(key: String): CreditDebitNoteEntity?
+
+  @Query("SELECT * FROM credit_debit_notes WHERE status IN ('OPEN', 'APPLIED') AND partyType = :partyType AND partyId = :partyId ORDER BY issueDate ASC, id ASC")
+  suspend fun getOpenForPartySync(partyType: PartyType, partyId: Long): List<CreditDebitNoteEntity>
+
+  @Query("SELECT * FROM credit_debit_notes ORDER BY id ASC")
+  suspend fun getAllSync(): List<CreditDebitNoteEntity>
+
+  @Query("SELECT COUNT(*) FROM credit_debit_notes WHERE noteType = :noteType")
+  suspend fun countByType(noteType: com.example.domain.model.CreditDebitNoteType): Int
+
+  @Query("SELECT COUNT(*) FROM credit_debit_notes WHERE noteNumber = :noteNumber")
+  suspend fun existsByNoteNumber(noteNumber: String): Int
+
+  @Insert(onConflict = OnConflictStrategy.ABORT)
+  suspend fun insert(note: CreditDebitNoteEntity): Long
+
+  @Update
+  suspend fun update(note: CreditDebitNoteEntity)
+}
+
+@Dao
+interface RefundRecordDao {
+  @Query("SELECT * FROM refund_records ORDER BY recordedAt DESC, id DESC")
+  fun observeAll(): Flow<List<RefundRecordEntity>>
+
+  @Query("SELECT * FROM refund_records WHERE partyType = :partyType AND partyId = :partyId ORDER BY recordedAt DESC, id DESC")
+  suspend fun getForPartySync(partyType: PartyType, partyId: Long): List<RefundRecordEntity>
+
+  @Query("SELECT * FROM refund_records WHERE sourceType = :sourceType AND sourceId = :sourceId ORDER BY recordedAt DESC, id DESC")
+  suspend fun getForSourceSync(
+    sourceType: com.example.domain.model.RefundSourceType,
+    sourceId: Long
+  ): List<RefundRecordEntity>
+
+  @Query("SELECT * FROM refund_records WHERE id = :id LIMIT 1")
+  suspend fun getByIdSync(id: Long): RefundRecordEntity?
+
+  @Query("SELECT * FROM refund_records WHERE idempotencyKey = :key LIMIT 1")
+  suspend fun getByIdempotencyKey(key: String): RefundRecordEntity?
+
+  @Query("SELECT * FROM refund_records WHERE executionStatus = :status ORDER BY recordedAt DESC, id DESC")
+  fun observeByStatus(status: RefundExecutionStatus): Flow<List<RefundRecordEntity>>
+
+  @Query("SELECT * FROM refund_records ORDER BY id ASC")
+  suspend fun getAllSync(): List<RefundRecordEntity>
+
+  @Insert(onConflict = OnConflictStrategy.ABORT)
+  suspend fun insert(refund: RefundRecordEntity): Long
+
+  @Update
+  suspend fun update(refund: RefundRecordEntity)
+}
+
+@Dao
+interface FinancialAuditLogDao {
+  // Append-only immutable audit log: NO @Update or @Delete operations permitted.
+  @Query("SELECT * FROM financial_audit_logs ORDER BY createdAt DESC, id DESC")
+  fun observeAll(): Flow<List<FinancialAuditLogEntity>>
+
+  @Query("SELECT * FROM financial_audit_logs WHERE entityType = :entityType AND entityId = :entityId ORDER BY createdAt DESC, id DESC")
+  fun observeForEntity(entityType: String, entityId: Long): Flow<List<FinancialAuditLogEntity>>
+
+  @Query("SELECT * FROM financial_audit_logs WHERE entityType = :entityType AND entityId = :entityId ORDER BY createdAt DESC, id DESC")
+  suspend fun getForEntitySync(entityType: String, entityId: Long): List<FinancialAuditLogEntity>
+
+  @Query("SELECT * FROM financial_audit_logs WHERE relatedPartyType = :partyType AND relatedPartyId = :partyId ORDER BY createdAt DESC, id DESC")
+  fun observeForParty(partyType: PartyType, partyId: Long): Flow<List<FinancialAuditLogEntity>>
+
+  @Query("SELECT * FROM financial_audit_logs ORDER BY id ASC")
+  suspend fun getAllSync(): List<FinancialAuditLogEntity>
+
+  @Insert(onConflict = OnConflictStrategy.ABORT)
+  suspend fun insert(log: FinancialAuditLogEntity): Long
+}
+
 

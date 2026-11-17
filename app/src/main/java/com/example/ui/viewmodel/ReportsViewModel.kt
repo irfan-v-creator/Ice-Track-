@@ -10,6 +10,7 @@ import com.example.data.repository.ExpenseRepository
 import com.example.data.repository.InventoryRepository
 import com.example.data.repository.ProductRepository
 import com.example.data.repository.PurchaseRepository
+import com.example.data.repository.ReturnRepository
 import com.example.data.repository.SalesRepository
 import com.example.data.repository.SubledgerRepository
 import com.example.data.repository.SupplierRepository
@@ -38,6 +39,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -84,7 +86,8 @@ class ReportsViewModel(
   private val supplierRepo: SupplierRepository,
   private val inventoryRepo: InventoryRepository,
   private val expenseRepo: ExpenseRepository,
-  private val subledgerRepo: SubledgerRepository
+  private val subledgerRepo: SubledgerRepository,
+  private val returnRepo: ReturnRepository? = null
 ) : ViewModel() {
 
   private val _selectedTab = MutableStateFlow(0)
@@ -104,10 +107,26 @@ class ReportsViewModel(
   private val _exportMessage = MutableStateFlow<String?>(null)
   val exportMessage = _exportMessage.asStateFlow()
 
+  private data class ReportsSalesBundle(
+    val sales: List<SalesInvoice>,
+    val items: List<com.example.domain.model.SalesInvoiceItem>,
+    val expenses: List<Expense>,
+    val salesReturns: List<com.example.domain.model.SalesReturn>,
+    val salesReturnItems: List<com.example.domain.model.SalesReturnItem>
+  )
+
+  private val salesAndReturnsFlow = combine(
+    salesRepo.allSales,
+    salesRepo.allSalesItems,
+    expenseRepo.allExpenses,
+    returnRepo?.allSalesReturns ?: flowOf(emptyList()),
+    returnRepo?.allSalesReturnItems ?: flowOf(emptyList())
+  ) { sales, items, expenses, salesReturns, salesReturnItems ->
+    ReportsSalesBundle(sales, items, expenses, salesReturns, salesReturnItems)
+  }
+
   val uiState: StateFlow<ReportsUiState> = combine(
-    combine(salesRepo.allSales, salesRepo.allSalesItems, expenseRepo.allExpenses) { sales, items, expenses ->
-      Triple(sales, items, expenses)
-    },
+    salesAndReturnsFlow,
     combine(productRepo.allProductsIncludingArchived, inventoryRepo.allBatchesIncludingInactive, purchaseRepo.allPurchases) { prods, allBatches, purchases ->
       Triple(prods, allBatches, purchases)
     },
@@ -120,7 +139,12 @@ class ReportsViewModel(
     combine(_isExporting, _latestExport, _exportMessage) { exporting, latest, msg ->
       Triple(exporting, latest, msg)
     }
-  ) { (sales, items, expenses), (allProds, allBatches, purchases), (allCusts, allSups, ledger), navList, exportTuple ->
+  ) { salesBundle, (allProds, allBatches, purchases), (allCusts, allSups, ledger), navList, exportTuple ->
+    val sales = salesBundle.sales
+    val items = salesBundle.items
+    val expenses = salesBundle.expenses
+    val salesReturns = salesBundle.salesReturns
+    val salesReturnItems = salesBundle.salesReturnItems
     val tab = navList[0] as Int
     val range = navList[1] as String
     val custId = navList[2] as Long?
@@ -158,7 +182,9 @@ class ReportsViewModel(
       batchCostMap = batchCostMap,
       expenses = expenses,
       startDate = startDate,
-      endDate = null
+      endDate = null,
+      salesReturns = salesReturns,
+      salesReturnItems = salesReturnItems
     )
 
     val prodSales = BusinessReportEngine.calculateProductSales(
@@ -379,7 +405,8 @@ class ReportsViewModel(
     private val supplierRepo: SupplierRepository,
     private val inventoryRepo: InventoryRepository,
     private val expenseRepo: ExpenseRepository,
-    private val subledgerRepo: SubledgerRepository
+    private val subledgerRepo: SubledgerRepository,
+    private val returnRepo: ReturnRepository? = null
   ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -391,7 +418,8 @@ class ReportsViewModel(
         supplierRepo,
         inventoryRepo,
         expenseRepo,
-        subledgerRepo
+        subledgerRepo,
+        returnRepo
       ) as T
     }
   }

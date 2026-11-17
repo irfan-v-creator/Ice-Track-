@@ -308,4 +308,23 @@ object PaymentAllocationEngine {
       }
     }
   }
+
+  data class ExcessPaymentSplit(
+    val advancePaise: Long,
+    val refundLiabilityPaise: Long
+  )
+
+  fun validateExcessPaymentSplit(
+    totalExcessPaise: Long,
+    requestedAdvancePaise: Long
+  ): ExcessPaymentSplit {
+    require(totalExcessPaise >= 0L) { "Excess amount cannot be negative" }
+    require(requestedAdvancePaise in 0L..totalExcessPaise) {
+      "Advance retention amount must be between ₹0.00 and ${SubledgerCalculationEngine.formatPaise(totalExcessPaise)}"
+    }
+    return ExcessPaymentSplit(
+      advancePaise = requestedAdvancePaise,
+      refundLiabilityPaise = totalExcessPaise - requestedAdvancePaise
+    )
+  }
 }

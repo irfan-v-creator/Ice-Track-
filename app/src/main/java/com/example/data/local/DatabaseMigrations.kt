@@ -678,5 +678,293 @@ object DatabaseMigrations {
       db.execSQL("CREATE INDEX IF NOT EXISTS `index_customer_payment_reminder_invoices_salesInvoiceId` ON `customer_payment_reminder_invoices` (`salesInvoiceId`)")
     }
   }
+
+  val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+      // 1. Subledger reversal metadata
+      db.execSQL("ALTER TABLE `subledger_entries` ADD COLUMN `operationRef` TEXT NOT NULL DEFAULT ''")
+      db.execSQL("ALTER TABLE `subledger_entries` ADD COLUMN `reversedAt` INTEGER")
+      db.execSQL("ALTER TABLE `subledger_entries` ADD COLUMN `reversalReason` TEXT")
+
+      // 2. Payment allocations consumption & reversal metadata
+      db.execSQL("ALTER TABLE `payment_allocations` ADD COLUMN `isFromAdvanceConsumption` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `payment_allocations` ADD COLUMN `reversedAt` INTEGER")
+      db.execSQL("ALTER TABLE `payment_allocations` ADD COLUMN `reversalReason` TEXT")
+
+      // 3. Index on product_batches.purchaseInvoiceId
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_product_batches_purchaseInvoiceId` ON `product_batches` (`purchaseInvoiceId`)")
+
+      // 4. Purchase invoices Phase 3 lifecycle, discount, charges & party snapshot columns
+      db.execSQL("ALTER TABLE `purchase_invoices` ADD COLUMN `subtotalPaise` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `purchase_invoices` ADD COLUMN `discountType` TEXT NOT NULL DEFAULT 'NONE'")
+      db.execSQL("ALTER TABLE `purchase_invoices` ADD COLUMN `discountValueRaw` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `purchase_invoices` ADD COLUMN `discountAmountPaise` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `purchase_invoices` ADD COLUMN `additionalChargesPaise` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `purchase_invoices` ADD COLUMN `invoiceStatus` TEXT NOT NULL DEFAULT 'ACTIVE'")
+      db.execSQL("ALTER TABLE `purchase_invoices` ADD COLUMN `cancelledAt` INTEGER")
+      db.execSQL("ALTER TABLE `purchase_invoices` ADD COLUMN `cancellationReason` TEXT")
+      db.execSQL("ALTER TABLE `purchase_invoices` ADD COLUMN `revisionVersion` INTEGER NOT NULL DEFAULT 1")
+      db.execSQL("ALTER TABLE `purchase_invoices` ADD COLUMN `updatedAt` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `purchase_invoices` ADD COLUMN `partyNameSnapshot` TEXT NOT NULL DEFAULT ''")
+      db.execSQL("ALTER TABLE `purchase_invoices` ADD COLUMN `partyPhoneSnapshot` TEXT NOT NULL DEFAULT ''")
+      db.execSQL("ALTER TABLE `purchase_invoices` ADD COLUMN `partyAddressSnapshot` TEXT NOT NULL DEFAULT ''")
+
+      db.execSQL(
+        """
+        UPDATE `purchase_invoices`
+        SET `subtotalPaise` = `totalAmountPaise`,
+            `updatedAt` = `createdAt`,
+            `partyNameSnapshot` = COALESCE((SELECT s.`name` FROM `suppliers` s WHERE s.`id` = `purchase_invoices`.`supplierId`), ''),
+            `partyPhoneSnapshot` = COALESCE((SELECT s.`phoneNumber` FROM `suppliers` s WHERE s.`id` = `purchase_invoices`.`supplierId`), ''),
+            `partyAddressSnapshot` = COALESCE((SELECT s.`address` FROM `suppliers` s WHERE s.`id` = `purchase_invoices`.`supplierId`), '')
+        """.trimIndent()
+      )
+
+      // 5. Purchase invoice items Phase 3 unit & product snapshot columns
+      db.execSQL("ALTER TABLE `purchase_invoice_items` ADD COLUMN `productNameSnapshot` TEXT NOT NULL DEFAULT ''")
+      db.execSQL("ALTER TABLE `purchase_invoice_items` ADD COLUMN `unitType` TEXT NOT NULL DEFAULT 'PIECE'")
+      db.execSQL("ALTER TABLE `purchase_invoice_items` ADD COLUMN `unitQuantity` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `purchase_invoice_items` ADD COLUMN `unitRatePaise` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `purchase_invoice_items` ADD COLUMN `itemDiscountPaise` INTEGER NOT NULL DEFAULT 0")
+
+      db.execSQL(
+        """
+        UPDATE `purchase_invoice_items`
+        SET `productNameSnapshot` = COALESCE((SELECT p.`name` FROM `products` p WHERE p.`id` = `purchase_invoice_items`.`productId`), ''),
+            `unitQuantity` = `quantityPieces`,
+            `unitRatePaise` = `costPerPiecePaise`
+        """.trimIndent()
+      )
+
+      // 6. Sales invoices Phase 3 lifecycle, discount, charges & party snapshot columns
+      db.execSQL("ALTER TABLE `sales_invoices` ADD COLUMN `subtotalPaise` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `sales_invoices` ADD COLUMN `discountType` TEXT NOT NULL DEFAULT 'NONE'")
+      db.execSQL("ALTER TABLE `sales_invoices` ADD COLUMN `discountValueRaw` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `sales_invoices` ADD COLUMN `discountAmountPaise` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `sales_invoices` ADD COLUMN `additionalChargesPaise` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `sales_invoices` ADD COLUMN `invoiceStatus` TEXT NOT NULL DEFAULT 'ACTIVE'")
+      db.execSQL("ALTER TABLE `sales_invoices` ADD COLUMN `cancelledAt` INTEGER")
+      db.execSQL("ALTER TABLE `sales_invoices` ADD COLUMN `cancellationReason` TEXT")
+      db.execSQL("ALTER TABLE `sales_invoices` ADD COLUMN `revisionVersion` INTEGER NOT NULL DEFAULT 1")
+      db.execSQL("ALTER TABLE `sales_invoices` ADD COLUMN `updatedAt` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `sales_invoices` ADD COLUMN `partyNameSnapshot` TEXT NOT NULL DEFAULT ''")
+      db.execSQL("ALTER TABLE `sales_invoices` ADD COLUMN `partyPhoneSnapshot` TEXT NOT NULL DEFAULT ''")
+      db.execSQL("ALTER TABLE `sales_invoices` ADD COLUMN `partyAddressSnapshot` TEXT NOT NULL DEFAULT ''")
+
+      db.execSQL(
+        """
+        UPDATE `sales_invoices`
+        SET `subtotalPaise` = `totalAmountPaise`,
+            `updatedAt` = `createdAt`,
+            `partyNameSnapshot` = COALESCE((SELECT c.`shopName` FROM `customers` c WHERE c.`id` = `sales_invoices`.`customerId`), ''),
+            `partyPhoneSnapshot` = COALESCE((SELECT c.`phoneNumber` FROM `customers` c WHERE c.`id` = `sales_invoices`.`customerId`), ''),
+            `partyAddressSnapshot` = COALESCE((SELECT c.`address` FROM `customers` c WHERE c.`id` = `sales_invoices`.`customerId`), '')
+        """.trimIndent()
+      )
+
+      // 7. Sales invoice items Phase 3 unit & product snapshot columns
+      db.execSQL("ALTER TABLE `sales_invoice_items` ADD COLUMN `productNameSnapshot` TEXT NOT NULL DEFAULT ''")
+      db.execSQL("ALTER TABLE `sales_invoice_items` ADD COLUMN `unitType` TEXT NOT NULL DEFAULT 'PIECE'")
+      db.execSQL("ALTER TABLE `sales_invoice_items` ADD COLUMN `unitQuantity` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `sales_invoice_items` ADD COLUMN `unitRatePaise` INTEGER NOT NULL DEFAULT 0")
+      db.execSQL("ALTER TABLE `sales_invoice_items` ADD COLUMN `itemDiscountPaise` INTEGER NOT NULL DEFAULT 0")
+
+      db.execSQL(
+        """
+        UPDATE `sales_invoice_items`
+        SET `productNameSnapshot` = COALESCE((SELECT p.`name` FROM `products` p WHERE p.`id` = `sales_invoice_items`.`productId`), ''),
+            `unitQuantity` = `quantityPieces`,
+            `unitRatePaise` = `unitPricePaise`
+        """.trimIndent()
+      )
+
+      // 8. Create sales_returns & sales_return_items
+      db.execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS `sales_returns` (
+          `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          `returnNumber` TEXT NOT NULL,
+          `salesInvoiceId` INTEGER NOT NULL,
+          `customerId` INTEGER NOT NULL,
+          `returnDate` INTEGER NOT NULL,
+          `totalReturnAmountPaise` INTEGER NOT NULL,
+          `settlementType` TEXT NOT NULL,
+          `creditNoteId` INTEGER,
+          `refundRecordId` INTEGER,
+          `subledgerEntryId` INTEGER,
+          `reason` TEXT NOT NULL,
+          `notes` TEXT NOT NULL,
+          `idempotencyKey` TEXT,
+          `createdAt` INTEGER NOT NULL,
+          FOREIGN KEY(`salesInvoiceId`) REFERENCES `sales_invoices`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT,
+          FOREIGN KEY(`customerId`) REFERENCES `customers`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT
+        )
+        """.trimIndent()
+      )
+      db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_sales_returns_returnNumber` ON `sales_returns` (`returnNumber`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_sales_returns_salesInvoiceId` ON `sales_returns` (`salesInvoiceId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_sales_returns_customerId` ON `sales_returns` (`customerId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_sales_returns_returnDate` ON `sales_returns` (`returnDate`)")
+      db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_sales_returns_idempotencyKey` ON `sales_returns` (`idempotencyKey`)")
+
+      db.execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS `sales_return_items` (
+          `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          `salesReturnId` INTEGER NOT NULL,
+          `originalSalesInvoiceItemId` INTEGER,
+          `productId` INTEGER NOT NULL,
+          `batchId` INTEGER NOT NULL,
+          `productNameSnapshot` TEXT NOT NULL,
+          `quantityPieces` INTEGER NOT NULL,
+          `unitPricePaise` INTEGER NOT NULL,
+          `lineTotalPaise` INTEGER NOT NULL,
+          `condition` TEXT NOT NULL,
+          `restoredToSaleableStock` INTEGER NOT NULL,
+          FOREIGN KEY(`salesReturnId`) REFERENCES `sales_returns`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+          FOREIGN KEY(`productId`) REFERENCES `products`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT
+        )
+        """.trimIndent()
+      )
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_sales_return_items_salesReturnId` ON `sales_return_items` (`salesReturnId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_sales_return_items_productId` ON `sales_return_items` (`productId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_sales_return_items_batchId` ON `sales_return_items` (`batchId`)")
+
+      // 9. Create purchase_returns & purchase_return_items
+      db.execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS `purchase_returns` (
+          `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          `returnNumber` TEXT NOT NULL,
+          `purchaseInvoiceId` INTEGER NOT NULL,
+          `supplierId` INTEGER NOT NULL,
+          `returnDate` INTEGER NOT NULL,
+          `totalReturnAmountPaise` INTEGER NOT NULL,
+          `settlementType` TEXT NOT NULL,
+          `debitNoteId` INTEGER,
+          `refundRecordId` INTEGER,
+          `subledgerEntryId` INTEGER,
+          `reason` TEXT NOT NULL,
+          `notes` TEXT NOT NULL,
+          `idempotencyKey` TEXT,
+          `createdAt` INTEGER NOT NULL,
+          FOREIGN KEY(`purchaseInvoiceId`) REFERENCES `purchase_invoices`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT,
+          FOREIGN KEY(`supplierId`) REFERENCES `suppliers`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT
+        )
+        """.trimIndent()
+      )
+      db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_purchase_returns_returnNumber` ON `purchase_returns` (`returnNumber`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_purchase_returns_purchaseInvoiceId` ON `purchase_returns` (`purchaseInvoiceId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_purchase_returns_supplierId` ON `purchase_returns` (`supplierId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_purchase_returns_returnDate` ON `purchase_returns` (`returnDate`)")
+      db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_purchase_returns_idempotencyKey` ON `purchase_returns` (`idempotencyKey`)")
+
+      db.execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS `purchase_return_items` (
+          `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          `purchaseReturnId` INTEGER NOT NULL,
+          `originalPurchaseInvoiceItemId` INTEGER,
+          `productId` INTEGER NOT NULL,
+          `batchId` INTEGER NOT NULL,
+          `productNameSnapshot` TEXT NOT NULL,
+          `batchNumberSnapshot` TEXT NOT NULL,
+          `quantityPieces` INTEGER NOT NULL,
+          `costPerPiecePaise` INTEGER NOT NULL,
+          `lineTotalPaise` INTEGER NOT NULL,
+          `condition` TEXT NOT NULL,
+          FOREIGN KEY(`purchaseReturnId`) REFERENCES `purchase_returns`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE,
+          FOREIGN KEY(`productId`) REFERENCES `products`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT,
+          FOREIGN KEY(`batchId`) REFERENCES `product_batches`(`id`) ON UPDATE NO ACTION ON DELETE RESTRICT
+        )
+        """.trimIndent()
+      )
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_purchase_return_items_purchaseReturnId` ON `purchase_return_items` (`purchaseReturnId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_purchase_return_items_productId` ON `purchase_return_items` (`productId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_purchase_return_items_batchId` ON `purchase_return_items` (`batchId`)")
+
+      // 10. Create credit_debit_notes
+      db.execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS `credit_debit_notes` (
+          `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          `noteNumber` TEXT NOT NULL,
+          `noteType` TEXT NOT NULL,
+          `partyType` TEXT NOT NULL,
+          `partyId` INTEGER NOT NULL,
+          `linkedInvoiceId` INTEGER,
+          `linkedReturnId` INTEGER,
+          `subledgerEntryId` INTEGER,
+          `amountPaise` INTEGER NOT NULL,
+          `appliedAmountPaise` INTEGER NOT NULL,
+          `status` TEXT NOT NULL,
+          `issueDate` INTEGER NOT NULL,
+          `reason` TEXT NOT NULL,
+          `notes` TEXT NOT NULL,
+          `idempotencyKey` TEXT,
+          `createdAt` INTEGER NOT NULL,
+          `updatedAt` INTEGER NOT NULL
+        )
+        """.trimIndent()
+      )
+      db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_credit_debit_notes_noteNumber` ON `credit_debit_notes` (`noteNumber`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_debit_notes_partyType_partyId` ON `credit_debit_notes` (`partyType`, `partyId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_debit_notes_linkedInvoiceId` ON `credit_debit_notes` (`linkedInvoiceId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_debit_notes_linkedReturnId` ON `credit_debit_notes` (`linkedReturnId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_credit_debit_notes_issueDate` ON `credit_debit_notes` (`issueDate`)")
+      db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_credit_debit_notes_idempotencyKey` ON `credit_debit_notes` (`idempotencyKey`)")
+
+      // 11. Create refund_records
+      db.execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS `refund_records` (
+          `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          `partyType` TEXT NOT NULL,
+          `partyId` INTEGER NOT NULL,
+          `sourceType` TEXT NOT NULL,
+          `sourceId` INTEGER NOT NULL,
+          `amountPaise` INTEGER NOT NULL,
+          `paymentMethod` TEXT NOT NULL,
+          `executionStatus` TEXT NOT NULL,
+          `reason` TEXT NOT NULL,
+          `notes` TEXT NOT NULL,
+          `referenceNumber` TEXT NOT NULL,
+          `subledgerEntryId` INTEGER,
+          `recordedAt` INTEGER NOT NULL,
+          `executedAt` INTEGER,
+          `idempotencyKey` TEXT
+        )
+        """.trimIndent()
+      )
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_refund_records_partyType_partyId` ON `refund_records` (`partyType`, `partyId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_refund_records_sourceType_sourceId` ON `refund_records` (`sourceType`, `sourceId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_refund_records_executionStatus` ON `refund_records` (`executionStatus`)")
+      db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_refund_records_idempotencyKey` ON `refund_records` (`idempotencyKey`)")
+
+      // 12. Create financial_audit_logs (append-only)
+      db.execSQL(
+        """
+        CREATE TABLE IF NOT EXISTS `financial_audit_logs` (
+          `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+          `operationType` TEXT NOT NULL,
+          `entityType` TEXT NOT NULL,
+          `entityId` INTEGER NOT NULL,
+          `relatedPartyType` TEXT,
+          `relatedPartyId` INTEGER,
+          `actorLabel` TEXT NOT NULL,
+          `reason` TEXT NOT NULL,
+          `beforeJson` TEXT NOT NULL,
+          `afterJson` TEXT NOT NULL,
+          `operationReference` TEXT NOT NULL,
+          `createdAt` INTEGER NOT NULL
+        )
+        """.trimIndent()
+      )
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_financial_audit_logs_operationType` ON `financial_audit_logs` (`operationType`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_financial_audit_logs_entityType_entityId` ON `financial_audit_logs` (`entityType`, `entityId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_financial_audit_logs_relatedPartyType_relatedPartyId` ON `financial_audit_logs` (`relatedPartyType`, `relatedPartyId`)")
+      db.execSQL("CREATE INDEX IF NOT EXISTS `index_financial_audit_logs_createdAt` ON `financial_audit_logs` (`createdAt`)")
+    }
+  }
 }
 

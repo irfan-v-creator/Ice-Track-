@@ -323,7 +323,7 @@ class CustomerPaymentReminderEngineAndMigrationTest {
     migratedDb.close()
 
     val roomDb = Room.databaseBuilder(context, IceTrackDatabase::class.java, dbName)
-      .addMigrations(DatabaseMigrations.MIGRATION_1_2, DatabaseMigrations.MIGRATION_2_3, DatabaseMigrations.MIGRATION_3_4)
+      .addMigrations(DatabaseMigrations.MIGRATION_1_2, DatabaseMigrations.MIGRATION_2_3, DatabaseMigrations.MIGRATION_3_4, DatabaseMigrations.MIGRATION_4_5)
       .allowMainThreadQueries()
       .build()
     try {
@@ -465,7 +465,7 @@ class CustomerPaymentReminderEngineAndMigrationTest {
     context.deleteDatabase(dbName)
 
     val fileDb1 = Room.databaseBuilder(context, IceTrackDatabase::class.java, dbName)
-      .addMigrations(DatabaseMigrations.MIGRATION_1_2, DatabaseMigrations.MIGRATION_2_3, DatabaseMigrations.MIGRATION_3_4)
+      .addMigrations(DatabaseMigrations.MIGRATION_1_2, DatabaseMigrations.MIGRATION_2_3, DatabaseMigrations.MIGRATION_3_4, DatabaseMigrations.MIGRATION_4_5)
       .allowMainThreadQueries()
       .build()
 
@@ -486,7 +486,7 @@ class CustomerPaymentReminderEngineAndMigrationTest {
     }
 
     val fileDb2 = Room.databaseBuilder(context, IceTrackDatabase::class.java, dbName)
-      .addMigrations(DatabaseMigrations.MIGRATION_1_2, DatabaseMigrations.MIGRATION_2_3, DatabaseMigrations.MIGRATION_3_4)
+      .addMigrations(DatabaseMigrations.MIGRATION_1_2, DatabaseMigrations.MIGRATION_2_3, DatabaseMigrations.MIGRATION_3_4, DatabaseMigrations.MIGRATION_4_5)
       .allowMainThreadQueries()
       .build()
     try {

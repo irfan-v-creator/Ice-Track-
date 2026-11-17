@@ -37,7 +37,9 @@ data class CustomerFormState(
   val phoneNumber: String = "",
   val address: String = "",
   val openingBalanceRupees: String = "0",
+  val openingBalanceIsAdvance: Boolean = false,
   val openingBalanceDate: Long = System.currentTimeMillis(),
+  val openingBalanceEditReason: String = "",
   val creditLimitRupees: String = "0",
   val paymentTermsDays: String = "7",
   val customPrices: Map<Long, String> = emptyMap(), // productId -> priceInRupees
@@ -153,8 +155,10 @@ class CustomerViewModel(
       ownerName = customer.ownerName,
       phoneNumber = customer.phoneNumber,
       address = customer.address,
-      openingBalanceRupees = SubledgerCalculationEngine.formatPaiseForInput(customer.openingBalancePaise),
+      openingBalanceRupees = SubledgerCalculationEngine.formatPaiseForInput(kotlin.math.abs(customer.openingBalancePaise)),
+      openingBalanceIsAdvance = customer.openingBalancePaise < 0L,
       openingBalanceDate = customer.openingBalanceDate,
+      openingBalanceEditReason = "",
       creditLimitRupees = SubledgerCalculationEngine.formatPaiseForInput(customer.creditLimitPaise),
       paymentTermsDays = customer.paymentTermsDays.toString(),
       isLoadingDetails = true
@@ -208,14 +212,19 @@ class CustomerViewModel(
       return
     }
 
-    val openingPaise = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(
+    val parsedOpening = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(
       state.openingBalanceRupees,
       allowNegative = true,
       allowEmptyAsZero = true
     )
-    if (openingPaise == null) {
+    if (parsedOpening == null) {
       _formState.value = state.copy(errorMessage = "Invalid opening balance amount. Enter a valid number with up to 2 decimal places.")
       return
+    }
+    val openingPaise = when {
+      parsedOpening < 0L -> parsedOpening
+      state.openingBalanceIsAdvance -> -parsedOpening
+      else -> parsedOpening
     }
 
     val creditLimitPaise = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(
@@ -273,7 +282,8 @@ class CustomerViewModel(
         customerRepository.saveCustomer(
           customer = customer,
           customPrices = customPriceEntities,
-          replaceCustomPrices = true
+          replaceCustomPrices = true,
+          openingEditReason = state.openingBalanceEditReason.trim().ifBlank { "Customer opening balance updated" }
         )
         _formState.value = CustomerFormState()
         onSuccess()

@@ -34,7 +34,9 @@ data class SupplierFormState(
   val phoneNumber: String = "",
   val address: String = "",
   val openingBalanceRupees: String = "0",
+  val openingBalanceIsAdvance: Boolean = false,
   val openingBalanceDate: Long = System.currentTimeMillis(),
+  val openingBalanceEditReason: String = "",
   val creditTermsDays: String = "15",
   val creditLimitRupees: String = "0",
   val errorMessage: String? = null,
@@ -144,8 +146,10 @@ class SupplierViewModel(
       contactPerson = supplier.contactPerson,
       phoneNumber = supplier.phoneNumber,
       address = supplier.address,
-      openingBalanceRupees = SubledgerCalculationEngine.formatPaiseForInput(supplier.openingBalancePaise),
+      openingBalanceRupees = SubledgerCalculationEngine.formatPaiseForInput(kotlin.math.abs(supplier.openingBalancePaise)),
+      openingBalanceIsAdvance = supplier.openingBalancePaise < 0L,
       openingBalanceDate = supplier.openingBalanceDate,
+      openingBalanceEditReason = "",
       creditTermsDays = supplier.creditTermsDays.toString(),
       creditLimitRupees = SubledgerCalculationEngine.formatPaiseForInput(supplier.creditLimitPaise)
     )
@@ -164,14 +168,19 @@ class SupplierViewModel(
       return
     }
 
-    val openingPaise = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(
+    val parsedOpening = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(
       state.openingBalanceRupees,
       allowNegative = true,
       allowEmptyAsZero = true
     )
-    if (openingPaise == null) {
+    if (parsedOpening == null) {
       _formState.value = state.copy(errorMessage = "Invalid opening balance amount. Enter a valid number with up to 2 decimal places.")
       return
+    }
+    val openingPaise = when {
+      parsedOpening < 0L -> parsedOpening
+      state.openingBalanceIsAdvance -> -parsedOpening
+      else -> parsedOpening
     }
 
     val creditLimitPaise = SubledgerCalculationEngine.parseRupeesToPaiseOrNull(
@@ -205,7 +214,10 @@ class SupplierViewModel(
           creditLimitPaise = creditLimitPaise,
           createdAt = state.createdAt
         )
-        supplierRepository.saveSupplier(supplier)
+        supplierRepository.saveSupplier(
+          supplier = supplier,
+          openingEditReason = state.openingBalanceEditReason.trim().ifBlank { "Supplier opening balance updated" }
+        )
         _formState.value = SupplierFormState()
         onSuccess()
       } catch (e: CancellationException) {

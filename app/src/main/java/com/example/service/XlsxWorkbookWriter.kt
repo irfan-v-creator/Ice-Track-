@@ -148,8 +148,8 @@ object XlsxWorkbookWriter {
     <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
     <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
       <numFmts count="2">
-        <numFmt numFmtId="164" formatCode="#,##0.00"/>
-        <numFmt numFmtId="165" formatCode="#,##0"/>
+        <numFmt numFmtId="164" formatCode="[&gt;=10000000]&quot;₹&quot;##\,##\,##\,##0.00;[&gt;=100000]&quot;₹&quot;##\,##\,##0.00;&quot;₹&quot;##,##0.00"/>
+        <numFmt numFmtId="165" formatCode="##,##0"/>
       </numFmts>
       <fonts count="5">
         <font><sz val="10"/><color rgb="FF152D43"/><name val="Calibri"/></font>
@@ -283,8 +283,7 @@ object XlsxWorkbookWriter {
       }
       is XlsxCell.Currency -> {
         val style = if (forceFooterStyle || cell.isBold) 5 else 3
-        val rupees = cell.paise.toDouble() / 100.0
-        val numStr = String.format(java.util.Locale.US, "%.2f", rupees)
+        val numStr = java.math.BigDecimal.valueOf(cell.paise, 2).toPlainString()
         append("<c r=\"$ref\" s=\"$style\"><v>$numStr</v></c>")
       }
       is XlsxCell.WholeNumber -> {
