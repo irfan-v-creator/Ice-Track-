@@ -34,15 +34,26 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.local.IceTrackDatabase
+import com.example.data.sync.CloudSyncRepository
+import com.example.data.sync.IceTrackSyncDatabase
+import com.example.ui.auth.GoogleSignInManager
+import com.example.ui.screens.AuthScreen
+import com.example.ui.viewmodel.CloudSyncViewModel
+import kotlinx.coroutines.launch
 import com.example.data.repository.AuditRepository
 import com.example.data.repository.CreditDebitNoteRepository
 import com.example.data.repository.CustomerRepository
@@ -192,23 +203,64 @@ class MainActivity : ComponentActivity() {
       )
     }
 
+    val syncDb = IceTrackSyncDatabase.getInstance(applicationContext)
+    val cloudSyncRepo = CloudSyncRepository(
+      context = applicationContext,
+      localDb = database,
+      syncDb = syncDb
+    )
+
     setContent {
       IceTrackTheme {
-        MainAppContent(
-          dashboardViewModel = dashboardViewModel,
-          productViewModel = productViewModel,
-          supplierViewModel = supplierViewModel,
-          customerViewModel = customerViewModel,
-          settingsViewModel = settingsViewModel,
-          inventoryViewModel = inventoryViewModel,
-          purchaseViewModel = purchaseViewModel,
-          salesViewModel = salesViewModel,
-          expenseViewModel = expenseViewModel,
-          reportsViewModel = reportsViewModel,
-          paymentReminderViewModel = paymentReminderViewModel,
-          financeLifecycleViewModel = financeLifecycleViewModel,
-          subledgerRepo = subledgerRepo
-        )
+        val currentUser by GoogleSignInManager.authStateFlow()
+          .collectAsStateWithLifecycle(initialValue = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser)
+        val context = LocalContext.current
+        val appScope = rememberCoroutineScope()
+
+        if (currentUser == null) {
+          AuthScreen(
+            onAuthenticated = {
+              // authStateFlow updates automatically when signInWithCredential completes
+            }
+          )
+        } else {
+          val signedInUser = currentUser!!
+          key(signedInUser.uid) {
+            val cloudSyncViewModel: CloudSyncViewModel = viewModel(
+              key = "cloud_sync_${signedInUser.uid}",
+              factory = CloudSyncViewModel.Factory(
+                uid = signedInUser.uid,
+                userEmail = signedInUser.email ?: "",
+                userDisplayName = signedInUser.displayName ?: "",
+                syncRepository = cloudSyncRepo
+              )
+            )
+            MainAppContent(
+              dashboardViewModel = dashboardViewModel,
+              productViewModel = productViewModel,
+              supplierViewModel = supplierViewModel,
+              customerViewModel = customerViewModel,
+              settingsViewModel = settingsViewModel,
+              inventoryViewModel = inventoryViewModel,
+              purchaseViewModel = purchaseViewModel,
+              salesViewModel = salesViewModel,
+              expenseViewModel = expenseViewModel,
+              reportsViewModel = reportsViewModel,
+              paymentReminderViewModel = paymentReminderViewModel,
+              financeLifecycleViewModel = financeLifecycleViewModel,
+              subledgerRepo = subledgerRepo,
+              cloudSyncViewModel = cloudSyncViewModel,
+              onSignOut = {
+                appScope.launch {
+                  GoogleSignInManager.signOutSafely(
+                    context = context,
+                    onBeforeSignOutCleanup = { cloudSyncViewModel.cleanupOnSignOut() }
+                  )
+                }
+              }
+            )
+          }
+        }
       }
     }
   }
@@ -229,7 +281,9 @@ fun MainAppContent(
   reportsViewModel: ReportsViewModel,
   paymentReminderViewModel: PaymentReminderViewModel,
   financeLifecycleViewModel: FinanceLifecycleViewModel,
-  subledgerRepo: SubledgerRepository
+  subledgerRepo: SubledgerRepository,
+  cloudSyncViewModel: CloudSyncViewModel? = null,
+  onSignOut: (() -> Unit)? = null
 ) {
   var currentScreen by remember { mutableStateOf(Screen.DASHBOARD) }
   var selectedLedgerCustomerId by remember { mutableStateOf<Long?>(null) }
@@ -487,7 +541,11 @@ fun MainAppContent(
           financeViewModel = financeLifecycleViewModel,
           onOpenNotesAndAudit = { currentScreen = Screen.NOTES_REFUNDS_AUDIT }
         )
-        Screen.SETTINGS -> SettingsScreen(viewModel = settingsViewModel)
+        Screen.SETTINGS -> SettingsScreen(
+          viewModel = settingsViewModel,
+          cloudSyncViewModel = cloudSyncViewModel,
+          onSignOut = onSignOut
+        )
         Screen.MORE -> MoreScreen(onNavigate = {
           if (it == Screen.LEDGER) {
             selectedLedgerCustomerId = null

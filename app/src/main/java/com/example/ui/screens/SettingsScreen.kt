@@ -62,12 +62,15 @@ import com.example.ui.theme.FigmaNavy
 import com.example.ui.theme.FigmaSoftTeal
 import com.example.ui.theme.FigmaTeal
 import com.example.ui.theme.FigmaWhite
+import com.example.ui.viewmodel.CloudSyncViewModel
 import com.example.ui.viewmodel.SettingsViewModel
 import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(
   viewModel: SettingsViewModel,
+  cloudSyncViewModel: CloudSyncViewModel? = null,
+  onSignOut: (() -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
   val state by viewModel.uiState.collectAsState()
@@ -265,6 +268,13 @@ fun SettingsScreen(
           }
         }
       }
+    }
+
+    if (cloudSyncViewModel != null && onSignOut != null) {
+      CloudSyncSection(
+        cloudSyncViewModel = cloudSyncViewModel,
+        onSignOut = onSignOut
+      )
     }
 
     // Backup & Restore (Zero-Permission SAF JSON V5)

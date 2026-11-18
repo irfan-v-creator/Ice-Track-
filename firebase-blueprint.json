@@ -1,0 +1,711 @@
+{
+  "entities": {
+    "UserWorkspace": {
+      "title": "UserWorkspace",
+      "description": "Authenticated IceTrack business workspace metadata scoped to Google UID.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID of workspace owner." },
+        "email": { "type": "string", "description": "Verified owner email address." },
+        "displayName": { "type": "string", "description": "Owner display name." },
+        "businessName": { "type": "string", "description": "Distributor trading name." },
+        "schemaVersion": { "type": "integer", "description": "Room financial schema version (5)." },
+        "lastSyncAtEpochMs": { "type": "integer", "description": "Last completed cloud sync epoch millis." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "ServerTimestamp set via FieldValue.serverTimestamp()." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "ServerTimestamp set via FieldValue.serverTimestamp()." }
+      },
+      "required": ["userId", "schemaVersion", "createdAt", "updatedAt"]
+    },
+    "ProductRecord": {
+      "title": "ProductRecord",
+      "description": "Ice cream SKU master record with unit conversion ratios synced from Room V5.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "name": { "type": "string" },
+        "sku": { "type": "string" },
+        "category": { "type": "string" },
+        "defaultPurchasePricePaise": { "type": "integer" },
+        "defaultSellingPricePaise": { "type": "integer" },
+        "minStockLevelPieces": { "type": "integer" },
+        "piecesPerBox": { "type": "integer" },
+        "boxesPerCarton": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "localCreatedAtMs": { "type": "integer" },
+        "localUpdatedAtMs": { "type": "integer" },
+        "deletedAtEpochMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "name", "sku", "category", "defaultPurchasePricePaise", "defaultSellingPricePaise", "minStockLevelPieces", "piecesPerBox", "boxesPerCarton", "active", "localCreatedAtMs", "localUpdatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "SupplierRecord": {
+      "title": "SupplierRecord",
+      "description": "Distributor supplier/manufacturer master record with opening balance and terms.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "name": { "type": "string" },
+        "contactPerson": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "address": { "type": "string" },
+        "openingBalancePaise": { "type": "integer" },
+        "openingBalanceDateEpochMs": { "type": "integer" },
+        "creditTermsDays": { "type": "integer" },
+        "creditLimitPaise": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "localCreatedAtMs": { "type": "integer" },
+        "localUpdatedAtMs": { "type": "integer" },
+        "deletedAtEpochMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "name", "contactPerson", "phoneNumber", "address", "openingBalancePaise", "openingBalanceDateEpochMs", "creditTermsDays", "creditLimitPaise", "active", "localCreatedAtMs", "localUpdatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "CustomerRecord": {
+      "title": "CustomerRecord",
+      "description": "Retail shop customer master record with credit limit and opening balance.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "shopName": { "type": "string" },
+        "ownerName": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "address": { "type": "string" },
+        "openingBalancePaise": { "type": "integer" },
+        "openingBalanceDateEpochMs": { "type": "integer" },
+        "creditLimitPaise": { "type": "integer" },
+        "paymentTermsDays": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "localCreatedAtMs": { "type": "integer" },
+        "localUpdatedAtMs": { "type": "integer" },
+        "deletedAtEpochMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "shopName", "ownerName", "phoneNumber", "address", "openingBalancePaise", "openingBalanceDateEpochMs", "creditLimitPaise", "paymentTermsDays", "active", "localCreatedAtMs", "localUpdatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "CustomerProductPriceRecord": {
+      "title": "CustomerProductPriceRecord",
+      "description": "Shop-specific custom SKU pricing override.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "customerLocalId": { "type": "integer" },
+        "productLocalId": { "type": "integer" },
+        "customSellingPricePaise": { "type": "integer" },
+        "localUpdatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "customerLocalId", "productLocalId", "customSellingPricePaise", "localUpdatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "ProductBatchRecord": {
+      "title": "ProductBatchRecord",
+      "description": "FEFO inventory batch with initial and remaining pieces.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "productLocalId": { "type": "integer" },
+        "batchNumber": { "type": "string" },
+        "purchaseInvoiceLocalId": { "type": "integer" },
+        "purchaseDateEpochMs": { "type": "integer" },
+        "expiryDateEpochMs": { "type": "integer" },
+        "initialQuantityPieces": { "type": "integer" },
+        "currentQuantityPieces": { "type": "integer" },
+        "purchaseCostPerPiecePaise": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "localCreatedAtMs": { "type": "integer" },
+        "localUpdatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "productLocalId", "batchNumber", "purchaseDateEpochMs", "expiryDateEpochMs", "initialQuantityPieces", "currentQuantityPieces", "purchaseCostPerPiecePaise", "active", "localCreatedAtMs", "localUpdatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "StockMovementRecord": {
+      "title": "StockMovementRecord",
+      "description": "Immutable stock movement ledger event (append-only).",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "productLocalId": { "type": "integer" },
+        "batchLocalId": { "type": "integer" },
+        "movementType": { "type": "string" },
+        "quantityPieces": { "type": "integer" },
+        "unitCostPaise": { "type": "integer" },
+        "referenceType": { "type": "string" },
+        "referenceId": { "type": "integer" },
+        "movementDateEpochMs": { "type": "integer" },
+        "notes": { "type": "string" },
+        "localCreatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "productLocalId", "movementType", "quantityPieces", "unitCostPaise", "referenceType", "referenceId", "movementDateEpochMs", "notes", "localCreatedAtMs", "contentHash", "createdAt"]
+    },
+    "PurchaseInvoiceRecord": {
+      "title": "PurchaseInvoiceRecord",
+      "description": "Supplier purchase bill header with revision tracking and soft cancellation.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "invoiceNumber": { "type": "string" },
+        "supplierLocalId": { "type": "integer" },
+        "invoiceDateEpochMs": { "type": "integer" },
+        "dueDateEpochMs": { "type": "integer" },
+        "subtotalPaise": { "type": "integer" },
+        "discountType": { "type": "string" },
+        "discountValueRaw": { "type": "integer" },
+        "discountAmountPaise": { "type": "integer" },
+        "additionalChargesPaise": { "type": "integer" },
+        "totalAmountPaise": { "type": "integer" },
+        "paidAmountPaise": { "type": "integer" },
+        "paymentStatus": { "type": "string" },
+        "paymentMethod": { "type": "string" },
+        "invoiceStatus": { "type": "string", "enum": ["ACTIVE", "CANCELLED"] },
+        "revisionVersion": { "type": "integer" },
+        "notes": { "type": "string" },
+        "confirmed": { "type": "boolean" },
+        "partyNameSnapshot": { "type": "string" },
+        "partyPhoneSnapshot": { "type": "string" },
+        "partyAddressSnapshot": { "type": "string" },
+        "cancelledAtEpochMs": { "type": "integer" },
+        "cancellationReason": { "type": "string" },
+        "localCreatedAtMs": { "type": "integer" },
+        "localUpdatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "invoiceNumber", "supplierLocalId", "invoiceDateEpochMs", "dueDateEpochMs", "subtotalPaise", "discountType", "discountValueRaw", "discountAmountPaise", "additionalChargesPaise", "totalAmountPaise", "paidAmountPaise", "paymentStatus", "invoiceStatus", "revisionVersion", "notes", "confirmed", "partyNameSnapshot", "partyPhoneSnapshot", "partyAddressSnapshot", "localCreatedAtMs", "localUpdatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "PurchaseInvoiceItemRecord": {
+      "title": "PurchaseInvoiceItemRecord",
+      "description": "Line item linked to a purchase invoice.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "purchaseInvoiceLocalId": { "type": "integer" },
+        "productLocalId": { "type": "integer" },
+        "batchNumber": { "type": "string" },
+        "expiryDateEpochMs": { "type": "integer" },
+        "quantityPieces": { "type": "integer" },
+        "costPerPiecePaise": { "type": "integer" },
+        "lineTotalPaise": { "type": "integer" },
+        "productNameSnapshot": { "type": "string" },
+        "unitType": { "type": "string" },
+        "unitQuantity": { "type": "integer" },
+        "unitRatePaise": { "type": "integer" },
+        "itemDiscountPaise": { "type": "integer" },
+        "localUpdatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "purchaseInvoiceLocalId", "productLocalId", "batchNumber", "expiryDateEpochMs", "quantityPieces", "costPerPiecePaise", "lineTotalPaise", "productNameSnapshot", "unitType", "unitQuantity", "unitRatePaise", "itemDiscountPaise", "localUpdatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "SalesInvoiceRecord": {
+      "title": "SalesInvoiceRecord",
+      "description": "Retail shop sales bill header (No GST) with revision tracking and soft cancellation.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "invoiceNumber": { "type": "string" },
+        "customerLocalId": { "type": "integer" },
+        "invoiceDateEpochMs": { "type": "integer" },
+        "dueDateEpochMs": { "type": "integer" },
+        "subtotalPaise": { "type": "integer" },
+        "discountType": { "type": "string" },
+        "discountValueRaw": { "type": "integer" },
+        "discountAmountPaise": { "type": "integer" },
+        "additionalChargesPaise": { "type": "integer" },
+        "totalAmountPaise": { "type": "integer" },
+        "paidAmountPaise": { "type": "integer" },
+        "paymentStatus": { "type": "string" },
+        "paymentMethod": { "type": "string" },
+        "invoiceStatus": { "type": "string", "enum": ["ACTIVE", "CANCELLED"] },
+        "revisionVersion": { "type": "integer" },
+        "notes": { "type": "string" },
+        "confirmed": { "type": "boolean" },
+        "partyNameSnapshot": { "type": "string" },
+        "partyPhoneSnapshot": { "type": "string" },
+        "partyAddressSnapshot": { "type": "string" },
+        "cancelledAtEpochMs": { "type": "integer" },
+        "cancellationReason": { "type": "string" },
+        "localCreatedAtMs": { "type": "integer" },
+        "localUpdatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "invoiceNumber", "customerLocalId", "invoiceDateEpochMs", "dueDateEpochMs", "subtotalPaise", "discountType", "discountValueRaw", "discountAmountPaise", "additionalChargesPaise", "totalAmountPaise", "paidAmountPaise", "paymentStatus", "invoiceStatus", "revisionVersion", "notes", "confirmed", "partyNameSnapshot", "partyPhoneSnapshot", "partyAddressSnapshot", "localCreatedAtMs", "localUpdatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "SalesInvoiceItemRecord": {
+      "title": "SalesInvoiceItemRecord",
+      "description": "Line item linked to a sales invoice.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "salesInvoiceLocalId": { "type": "integer" },
+        "productLocalId": { "type": "integer" },
+        "batchLocalId": { "type": "integer" },
+        "quantityPieces": { "type": "integer" },
+        "unitPricePaise": { "type": "integer" },
+        "lineTotalPaise": { "type": "integer" },
+        "productNameSnapshot": { "type": "string" },
+        "unitType": { "type": "string" },
+        "unitQuantity": { "type": "integer" },
+        "unitRatePaise": { "type": "integer" },
+        "itemDiscountPaise": { "type": "integer" },
+        "localUpdatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "salesInvoiceLocalId", "productLocalId", "batchLocalId", "quantityPieces", "unitPricePaise", "lineTotalPaise", "productNameSnapshot", "unitType", "unitQuantity", "unitRatePaise", "itemDiscountPaise", "localUpdatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "SubledgerEntryRecord": {
+      "title": "SubledgerEntryRecord",
+      "description": "Immutable-amount AR/AP ledger entry supporting soft-reversal only.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "partyType": { "type": "string" },
+        "partyLocalId": { "type": "integer" },
+        "entryType": { "type": "string" },
+        "referenceType": { "type": "string" },
+        "referenceId": { "type": "integer" },
+        "debitPaise": { "type": "integer" },
+        "creditPaise": { "type": "integer" },
+        "entryDateEpochMs": { "type": "integer" },
+        "notes": { "type": "string" },
+        "reversed": { "type": "boolean" },
+        "operationRef": { "type": "string" },
+        "reversedAtEpochMs": { "type": "integer" },
+        "reversalReason": { "type": "string" },
+        "localCreatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "partyType", "partyLocalId", "entryType", "referenceType", "referenceId", "debitPaise", "creditPaise", "entryDateEpochMs", "notes", "reversed", "operationRef", "localCreatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "PaymentAllocationRecord": {
+      "title": "PaymentAllocationRecord",
+      "description": "Payment/Advance allocation mapping supporting soft-reversal only.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "paymentLocalId": { "type": "integer" },
+        "partyType": { "type": "string" },
+        "partyLocalId": { "type": "integer" },
+        "allocationType": { "type": "string" },
+        "invoiceLocalId": { "type": "integer" },
+        "allocatedAmountPaise": { "type": "integer" },
+        "allocatedAtEpochMs": { "type": "integer" },
+        "notes": { "type": "string" },
+        "reversed": { "type": "boolean" },
+        "fromAdvanceConsumption": { "type": "boolean" },
+        "reversedAtEpochMs": { "type": "integer" },
+        "reversalReason": { "type": "string" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "paymentLocalId", "partyType", "partyLocalId", "allocationType", "allocatedAmountPaise", "allocatedAtEpochMs", "notes", "reversed", "fromAdvanceConsumption", "contentHash", "createdAt", "updatedAt"]
+    },
+    "SalesReturnRecord": {
+      "title": "SalesReturnRecord",
+      "description": "Customer sales return header with idempotency key and settlement metadata.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "returnNumber": { "type": "string" },
+        "salesInvoiceLocalId": { "type": "integer" },
+        "customerLocalId": { "type": "integer" },
+        "returnDateEpochMs": { "type": "integer" },
+        "totalReturnAmountPaise": { "type": "integer" },
+        "settlementType": { "type": "string" },
+        "creditNoteLocalId": { "type": "integer" },
+        "refundRecordLocalId": { "type": "integer" },
+        "subledgerEntryLocalId": { "type": "integer" },
+        "reason": { "type": "string" },
+        "notes": { "type": "string" },
+        "idempotencyKey": { "type": "string" },
+        "localCreatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "returnNumber", "salesInvoiceLocalId", "customerLocalId", "returnDateEpochMs", "totalReturnAmountPaise", "settlementType", "reason", "notes", "localCreatedAtMs", "contentHash", "createdAt"]
+    },
+    "SalesReturnItemRecord": {
+      "title": "SalesReturnItemRecord",
+      "description": "Returned sales item condition and batch restoration status.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "salesReturnLocalId": { "type": "integer" },
+        "originalSalesInvoiceItemLocalId": { "type": "integer" },
+        "productLocalId": { "type": "integer" },
+        "batchLocalId": { "type": "integer" },
+        "productNameSnapshot": { "type": "string" },
+        "quantityPieces": { "type": "integer" },
+        "unitPricePaise": { "type": "integer" },
+        "lineTotalPaise": { "type": "integer" },
+        "condition": { "type": "string" },
+        "restoredToSaleableStock": { "type": "boolean" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "salesReturnLocalId", "productLocalId", "batchLocalId", "productNameSnapshot", "quantityPieces", "unitPricePaise", "lineTotalPaise", "condition", "restoredToSaleableStock", "contentHash", "createdAt"]
+    },
+    "PurchaseReturnRecord": {
+      "title": "PurchaseReturnRecord",
+      "description": "Supplier purchase return header.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "returnNumber": { "type": "string" },
+        "purchaseInvoiceLocalId": { "type": "integer" },
+        "supplierLocalId": { "type": "integer" },
+        "returnDateEpochMs": { "type": "integer" },
+        "totalReturnAmountPaise": { "type": "integer" },
+        "settlementType": { "type": "string" },
+        "debitNoteLocalId": { "type": "integer" },
+        "refundRecordLocalId": { "type": "integer" },
+        "subledgerEntryLocalId": { "type": "integer" },
+        "reason": { "type": "string" },
+        "notes": { "type": "string" },
+        "idempotencyKey": { "type": "string" },
+        "localCreatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "returnNumber", "purchaseInvoiceLocalId", "supplierLocalId", "returnDateEpochMs", "totalReturnAmountPaise", "settlementType", "reason", "notes", "localCreatedAtMs", "contentHash", "createdAt"]
+    },
+    "PurchaseReturnItemRecord": {
+      "title": "PurchaseReturnItemRecord",
+      "description": "Returned purchase item and batch deduction record.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "purchaseReturnLocalId": { "type": "integer" },
+        "originalPurchaseInvoiceItemLocalId": { "type": "integer" },
+        "productLocalId": { "type": "integer" },
+        "batchLocalId": { "type": "integer" },
+        "productNameSnapshot": { "type": "string" },
+        "batchNumberSnapshot": { "type": "string" },
+        "quantityPieces": { "type": "integer" },
+        "costPerPiecePaise": { "type": "integer" },
+        "lineTotalPaise": { "type": "integer" },
+        "condition": { "type": "string" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "purchaseReturnLocalId", "productLocalId", "batchLocalId", "productNameSnapshot", "batchNumberSnapshot", "quantityPieces", "costPerPiecePaise", "lineTotalPaise", "condition", "contentHash", "createdAt"]
+    },
+    "CreditDebitNoteRecord": {
+      "title": "CreditDebitNoteRecord",
+      "description": "Customer/Supplier Credit or Debit Note with terminal state locking.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "noteNumber": { "type": "string" },
+        "noteType": { "type": "string" },
+        "partyType": { "type": "string" },
+        "partyLocalId": { "type": "integer" },
+        "linkedInvoiceLocalId": { "type": "integer" },
+        "linkedReturnLocalId": { "type": "integer" },
+        "subledgerEntryLocalId": { "type": "integer" },
+        "amountPaise": { "type": "integer" },
+        "appliedAmountPaise": { "type": "integer" },
+        "status": { "type": "string", "enum": ["OPEN", "APPLIED", "SETTLED", "CANCELLED"] },
+        "issueDateEpochMs": { "type": "integer" },
+        "reason": { "type": "string" },
+        "notes": { "type": "string" },
+        "idempotencyKey": { "type": "string" },
+        "localCreatedAtMs": { "type": "integer" },
+        "localUpdatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "noteNumber", "noteType", "partyType", "partyLocalId", "amountPaise", "appliedAmountPaise", "status", "issueDateEpochMs", "reason", "notes", "localCreatedAtMs", "localUpdatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "RefundRecordDto": {
+      "title": "RefundRecordDto",
+      "description": "Manual refund tracking record (no automatic gateway execution).",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "partyType": { "type": "string" },
+        "partyLocalId": { "type": "integer" },
+        "sourceType": { "type": "string" },
+        "sourceId": { "type": "integer" },
+        "amountPaise": { "type": "integer" },
+        "paymentMethod": { "type": "string" },
+        "executionStatus": { "type": "string", "enum": ["RECORDED_PENDING_PAYOUT", "PAYOUT_EXECUTED"] },
+        "reason": { "type": "string" },
+        "notes": { "type": "string" },
+        "referenceNumber": { "type": "string" },
+        "subledgerEntryLocalId": { "type": "integer" },
+        "recordedAtEpochMs": { "type": "integer" },
+        "executedAtEpochMs": { "type": "integer" },
+        "idempotencyKey": { "type": "string" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "partyType", "partyLocalId", "sourceType", "sourceId", "amountPaise", "paymentMethod", "executionStatus", "reason", "notes", "referenceNumber", "recordedAtEpochMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "FinancialAuditLogRecord": {
+      "title": "FinancialAuditLogRecord",
+      "description": "Permanent immutable financial audit log (create & read only).",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "operationType": { "type": "string" },
+        "entityType": { "type": "string" },
+        "entityId": { "type": "integer" },
+        "relatedPartyType": { "type": "string" },
+        "relatedPartyId": { "type": "integer" },
+        "actorLabel": { "type": "string" },
+        "reason": { "type": "string" },
+        "beforeJson": { "type": "string" },
+        "afterJson": { "type": "string" },
+        "operationReference": { "type": "string" },
+        "localCreatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "operationType", "entityType", "entityId", "actorLabel", "reason", "beforeJson", "afterJson", "operationReference", "localCreatedAtMs", "contentHash", "createdAt"]
+    },
+    "ExpenseRecord": {
+      "title": "ExpenseRecord",
+      "description": "Operating expense record with soft-delete support.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "category": { "type": "string" },
+        "amountPaise": { "type": "integer" },
+        "expenseDateEpochMs": { "type": "integer" },
+        "paymentMethod": { "type": "string" },
+        "referenceNumber": { "type": "string" },
+        "notes": { "type": "string" },
+        "localCreatedAtMs": { "type": "integer" },
+        "deletedAtEpochMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "category", "amountPaise", "expenseDateEpochMs", "paymentMethod", "referenceNumber", "notes", "localCreatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "PaymentReminderRecord": {
+      "title": "PaymentReminderRecord",
+      "description": "WhatsApp payment reminder tracking log.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "customerLocalId": { "type": "integer" },
+        "targetPhoneE164": { "type": "string" },
+        "dueKind": { "type": "string" },
+        "status": { "type": "string" },
+        "snapshotPendingInvoiceCount": { "type": "integer" },
+        "snapshotTotalInvoicePaise": { "type": "integer" },
+        "snapshotTotalInvoicePendingPaise": { "type": "integer" },
+        "snapshotNetOutstandingPaise": { "type": "integer" },
+        "renderedMessage": { "type": "string" },
+        "whatsappPackageUsed": { "type": "string" },
+        "failureReason": { "type": "string" },
+        "awaitingUserConfirmation": { "type": "boolean" },
+        "localCreatedAtMs": { "type": "integer" },
+        "whatsappOpenedAtEpochMs": { "type": "integer" },
+        "confirmedSentAtEpochMs": { "type": "integer" },
+        "localUpdatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "customerLocalId", "targetPhoneE164", "dueKind", "status", "snapshotPendingInvoiceCount", "snapshotTotalInvoicePaise", "snapshotTotalInvoicePendingPaise", "snapshotNetOutstandingPaise", "renderedMessage", "awaitingUserConfirmation", "localCreatedAtMs", "localUpdatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "AppSettingRecord": {
+      "title": "AppSettingRecord",
+      "description": "Business settings key-value pair.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "settingKey": { "type": "string" },
+        "settingValue": { "type": "string" },
+        "localUpdatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "settingKey", "settingValue", "localUpdatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "ProductSupplierRecord": {
+      "title": "ProductSupplierRecord",
+      "description": "Product-to-Supplier cost link.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "productLocalId": { "type": "integer" },
+        "supplierLocalId": { "type": "integer" },
+        "supplierProductCode": { "type": "string" },
+        "purchaseCostPaise": { "type": "integer" },
+        "preferredSupplier": { "type": "boolean" },
+        "localUpdatedAtMs": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "productLocalId", "supplierLocalId", "supplierProductCode", "purchaseCostPaise", "preferredSupplier", "localUpdatedAtMs", "contentHash", "createdAt", "updatedAt"]
+    },
+    "PaymentReminderInvoiceRecord": {
+      "title": "PaymentReminderInvoiceRecord",
+      "description": "Invoice snapshot attached to a customer payment reminder.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "localId": { "type": "integer" },
+        "reminderLocalId": { "type": "integer" },
+        "salesInvoiceLocalId": { "type": "integer" },
+        "invoiceDateSnapshotMs": { "type": "integer" },
+        "totalAmountPaiseSnapshot": { "type": "integer" },
+        "pendingAmountPaiseSnapshot": { "type": "integer" },
+        "contentHash": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "localId", "reminderLocalId", "salesInvoiceLocalId", "invoiceDateSnapshotMs", "totalAmountPaiseSnapshot", "pendingAmountPaiseSnapshot", "contentHash", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserWorkspace" },
+      "description": "Authenticated business workspace root document."
+    },
+    "/users/{userId}/products/{docId}": {
+      "schema": { "$ref": "#/entities/ProductRecord" },
+      "description": "User-scoped product catalog and unit conversion ratios."
+    },
+    "/users/{userId}/suppliers/{docId}": {
+      "schema": { "$ref": "#/entities/SupplierRecord" },
+      "description": "User-scoped supplier master records (PII protected)."
+    },
+    "/users/{userId}/customers/{docId}": {
+      "schema": { "$ref": "#/entities/CustomerRecord" },
+      "description": "User-scoped retail shop customer records (PII protected)."
+    },
+    "/users/{userId}/customer_product_prices/{docId}": {
+      "schema": { "$ref": "#/entities/CustomerProductPriceRecord" },
+      "description": "User-scoped shop custom SKU rates."
+    },
+    "/users/{userId}/product_batches/{docId}": {
+      "schema": { "$ref": "#/entities/ProductBatchRecord" },
+      "description": "User-scoped FEFO inventory batches."
+    },
+    "/users/{userId}/stock_movements/{docId}": {
+      "schema": { "$ref": "#/entities/StockMovementRecord" },
+      "description": "Immutable stock movement history."
+    },
+    "/users/{userId}/purchase_invoices/{docId}": {
+      "schema": { "$ref": "#/entities/PurchaseInvoiceRecord" },
+      "description": "User-scoped supplier purchase bills."
+    },
+    "/users/{userId}/purchase_invoice_items/{docId}": {
+      "schema": { "$ref": "#/entities/PurchaseInvoiceItemRecord" },
+      "description": "User-scoped purchase invoice line items."
+    },
+    "/users/{userId}/sales_invoices/{docId}": {
+      "schema": { "$ref": "#/entities/SalesInvoiceRecord" },
+      "description": "User-scoped sales invoices (No GST)."
+    },
+    "/users/{userId}/sales_invoice_items/{docId}": {
+      "schema": { "$ref": "#/entities/SalesInvoiceItemRecord" },
+      "description": "User-scoped sales invoice line items."
+    },
+    "/users/{userId}/subledger_entries/{docId}": {
+      "schema": { "$ref": "#/entities/SubledgerEntryRecord" },
+      "description": "Immutable-amount customer/supplier ledger entries with soft reversal."
+    },
+    "/users/{userId}/payment_allocations/{docId}": {
+      "schema": { "$ref": "#/entities/PaymentAllocationRecord" },
+      "description": "Payment and advance allocations with soft reversal."
+    },
+    "/users/{userId}/sales_returns/{docId}": {
+      "schema": { "$ref": "#/entities/SalesReturnRecord" },
+      "description": "Customer sales return records."
+    },
+    "/users/{userId}/sales_return_items/{docId}": {
+      "schema": { "$ref": "#/entities/SalesReturnItemRecord" },
+      "description": "Customer sales return line items."
+    },
+    "/users/{userId}/purchase_returns/{docId}": {
+      "schema": { "$ref": "#/entities/PurchaseReturnRecord" },
+      "description": "Supplier purchase return records."
+    },
+    "/users/{userId}/purchase_return_items/{docId}": {
+      "schema": { "$ref": "#/entities/PurchaseReturnItemRecord" },
+      "description": "Supplier purchase return line items."
+    },
+    "/users/{userId}/credit_debit_notes/{docId}": {
+      "schema": { "$ref": "#/entities/CreditDebitNoteRecord" },
+      "description": "Customer/Supplier Credit & Debit Notes."
+    },
+    "/users/{userId}/refund_records/{docId}": {
+      "schema": { "$ref": "#/entities/RefundRecordDto" },
+      "description": "Manual refund tracking and payout status records."
+    },
+    "/users/{userId}/financial_audit_logs/{docId}": {
+      "schema": { "$ref": "#/entities/FinancialAuditLogRecord" },
+      "description": "Permanent immutable financial audit log."
+    },
+    "/users/{userId}/expenses/{docId}": {
+      "schema": { "$ref": "#/entities/ExpenseRecord" },
+      "description": "Operating expenses."
+    },
+    "/users/{userId}/payment_reminders/{docId}": {
+      "schema": { "$ref": "#/entities/PaymentReminderRecord" },
+      "description": "WhatsApp customer payment reminders."
+    },
+    "/users/{userId}/payment_reminder_invoices/{docId}": {
+      "schema": { "$ref": "#/entities/PaymentReminderInvoiceRecord" },
+      "description": "Invoice snapshots attached to payment reminders."
+    },
+    "/users/{userId}/product_suppliers/{docId}": {
+      "schema": { "$ref": "#/entities/ProductSupplierRecord" },
+      "description": "Product-supplier preferred links and costs."
+    },
+    "/users/{userId}/app_settings/{docId}": {
+      "schema": { "$ref": "#/entities/AppSettingRecord" },
+      "description": "User workspace settings."
+    }
+  }
+}

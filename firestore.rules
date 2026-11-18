@@ -1,0 +1,944 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny all by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================
+    // Global Hardened Primitives
+    // =========================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string &&
+             id.size() >= 1 &&
+             id.size() <= 128 &&
+             id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function isNonNegInt(v) {
+      return v is int && v >= 0;
+    }
+
+    function isValidStr(v, minLen, maxLen) {
+      return v is string && v.size() >= minLen && v.size() <= maxLen;
+    }
+
+    function isValidHash(v) {
+      return v is string && v.size() >= 8 && v.size() <= 128;
+    }
+
+    function isValidPartyType(t) {
+      return t in ['CUSTOMER', 'SUPPLIER'];
+    }
+
+    function isValidInvoiceStatus(s) {
+      return s in ['ACTIVE', 'CANCELLED'];
+    }
+
+    function isValidPaymentStatus(s) {
+      return s in ['UNPAID', 'PARTIALLY_PAID', 'PAID'];
+    }
+
+    function isValidDiscountType(t) {
+      return t in ['NONE', 'PERCENT', 'FLAT'];
+    }
+
+    function isValidPaymentMethod(m) {
+      return m in ['CASH', 'UPI', 'BANK_TRANSFER', 'CHEQUE'];
+    }
+
+    // =========================================================
+    // Entity Validation Helpers (Zero-Trust Schema Enforcers)
+    // =========================================================
+    function isValidWorkspace(data, userId) {
+      return data.userId == userId &&
+             data.schemaVersion is int && data.schemaVersion == 5 &&
+             (!('email' in data) || isValidStr(data.email, 0, 200)) &&
+             (!('displayName' in data) || isValidStr(data.displayName, 0, 120)) &&
+             (!('businessName' in data) || isValidStr(data.businessName, 0, 150)) &&
+             (!('lastSyncAtEpochMs' in data) || isNonNegInt(data.lastSyncAtEpochMs));
+    }
+
+    function isValidProduct(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isValidStr(data.name, 1, 200) &&
+             isValidStr(data.sku, 1, 80) &&
+             isValidStr(data.category, 1, 100) &&
+             isNonNegInt(data.defaultPurchasePricePaise) &&
+             isNonNegInt(data.defaultSellingPricePaise) &&
+             isNonNegInt(data.minStockLevelPieces) &&
+             data.piecesPerBox is int && data.piecesPerBox >= 1 &&
+             data.boxesPerCarton is int && data.boxesPerCarton >= 1 &&
+             data.active is bool &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             isNonNegInt(data.localUpdatedAtMs) &&
+             (!('deletedAtEpochMs' in data) || isNonNegInt(data.deletedAtEpochMs)) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidSupplier(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isValidStr(data.name, 1, 200) &&
+             isValidStr(data.contactPerson, 0, 150) &&
+             isValidStr(data.phoneNumber, 0, 40) &&
+             isValidStr(data.address, 0, 300) &&
+             data.openingBalancePaise is int &&
+             isNonNegInt(data.openingBalanceDateEpochMs) &&
+             isNonNegInt(data.creditTermsDays) &&
+             isNonNegInt(data.creditLimitPaise) &&
+             data.active is bool &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             isNonNegInt(data.localUpdatedAtMs) &&
+             (!('deletedAtEpochMs' in data) || isNonNegInt(data.deletedAtEpochMs)) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidCustomer(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isValidStr(data.shopName, 1, 200) &&
+             isValidStr(data.ownerName, 0, 150) &&
+             isValidStr(data.phoneNumber, 0, 40) &&
+             isValidStr(data.address, 0, 300) &&
+             data.openingBalancePaise is int &&
+             isNonNegInt(data.openingBalanceDateEpochMs) &&
+             isNonNegInt(data.creditLimitPaise) &&
+             isNonNegInt(data.paymentTermsDays) &&
+             data.active is bool &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             isNonNegInt(data.localUpdatedAtMs) &&
+             (!('deletedAtEpochMs' in data) || isNonNegInt(data.deletedAtEpochMs)) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidCustomerPrice(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isNonNegInt(data.customerLocalId) && data.customerLocalId > 0 &&
+             isNonNegInt(data.productLocalId) && data.productLocalId > 0 &&
+             isNonNegInt(data.customSellingPricePaise) &&
+             isNonNegInt(data.localUpdatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidProductSupplier(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isNonNegInt(data.productLocalId) && data.productLocalId > 0 &&
+             isNonNegInt(data.supplierLocalId) && data.supplierLocalId > 0 &&
+             isValidStr(data.supplierProductCode, 0, 100) &&
+             isNonNegInt(data.purchaseCostPaise) &&
+             data.preferredSupplier is bool &&
+             isNonNegInt(data.localUpdatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidBatch(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isNonNegInt(data.productLocalId) && data.productLocalId > 0 &&
+             isValidStr(data.batchNumber, 1, 100) &&
+             (!('purchaseInvoiceLocalId' in data) || isNonNegInt(data.purchaseInvoiceLocalId)) &&
+             isNonNegInt(data.purchaseDateEpochMs) &&
+             isNonNegInt(data.expiryDateEpochMs) &&
+             isNonNegInt(data.initialQuantityPieces) &&
+             isNonNegInt(data.currentQuantityPieces) &&
+             isNonNegInt(data.purchaseCostPerPiecePaise) &&
+             data.active is bool &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             isNonNegInt(data.localUpdatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidStockMovement(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isNonNegInt(data.productLocalId) && data.productLocalId > 0 &&
+             (!('batchLocalId' in data) || isNonNegInt(data.batchLocalId)) &&
+             data.movementType in ['PURCHASE_RECEIPT', 'PURCHASE_RETURN', 'SALE_DISPATCH', 'SALE_RETURN', 'WASTAGE_EXPIRED', 'STOCK_ADJUSTMENT'] &&
+             data.quantityPieces is int &&
+             isNonNegInt(data.unitCostPaise) &&
+             isValidStr(data.referenceType, 1, 80) &&
+             data.referenceId is int &&
+             isNonNegInt(data.movementDateEpochMs) &&
+             isValidStr(data.notes, 0, 500) &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidPurchaseInvoice(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isValidStr(data.invoiceNumber, 1, 80) &&
+             isNonNegInt(data.supplierLocalId) && data.supplierLocalId > 0 &&
+             isNonNegInt(data.invoiceDateEpochMs) &&
+             isNonNegInt(data.dueDateEpochMs) &&
+             isNonNegInt(data.subtotalPaise) &&
+             isValidDiscountType(data.discountType) &&
+             isNonNegInt(data.discountValueRaw) &&
+             isNonNegInt(data.discountAmountPaise) &&
+             isNonNegInt(data.additionalChargesPaise) &&
+             isNonNegInt(data.totalAmountPaise) &&
+             isNonNegInt(data.paidAmountPaise) &&
+             isValidPaymentStatus(data.paymentStatus) &&
+             (!('paymentMethod' in data) || isValidPaymentMethod(data.paymentMethod)) &&
+             isValidInvoiceStatus(data.invoiceStatus) &&
+             data.revisionVersion is int && data.revisionVersion >= 1 &&
+             isValidStr(data.notes, 0, 1000) &&
+             data.confirmed is bool &&
+             isValidStr(data.partyNameSnapshot, 0, 200) &&
+             isValidStr(data.partyPhoneSnapshot, 0, 40) &&
+             isValidStr(data.partyAddressSnapshot, 0, 300) &&
+             (!('cancelledAtEpochMs' in data) || isNonNegInt(data.cancelledAtEpochMs)) &&
+             (!('cancellationReason' in data) || isValidStr(data.cancellationReason, 0, 500)) &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             isNonNegInt(data.localUpdatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidPurchaseInvoiceItem(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isNonNegInt(data.purchaseInvoiceLocalId) && data.purchaseInvoiceLocalId > 0 &&
+             isNonNegInt(data.productLocalId) && data.productLocalId > 0 &&
+             isValidStr(data.batchNumber, 1, 100) &&
+             isNonNegInt(data.expiryDateEpochMs) &&
+             data.quantityPieces is int && data.quantityPieces > 0 &&
+             isNonNegInt(data.costPerPiecePaise) &&
+             isNonNegInt(data.lineTotalPaise) &&
+             isValidStr(data.productNameSnapshot, 0, 200) &&
+             data.unitType in ['PIECE', 'BOX', 'CARTON'] &&
+             data.unitQuantity is int && data.unitQuantity > 0 &&
+             isNonNegInt(data.unitRatePaise) &&
+             isNonNegInt(data.itemDiscountPaise) &&
+             isNonNegInt(data.localUpdatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidSalesInvoice(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isValidStr(data.invoiceNumber, 1, 80) &&
+             isNonNegInt(data.customerLocalId) && data.customerLocalId > 0 &&
+             isNonNegInt(data.invoiceDateEpochMs) &&
+             isNonNegInt(data.dueDateEpochMs) &&
+             isNonNegInt(data.subtotalPaise) &&
+             isValidDiscountType(data.discountType) &&
+             isNonNegInt(data.discountValueRaw) &&
+             isNonNegInt(data.discountAmountPaise) &&
+             isNonNegInt(data.additionalChargesPaise) &&
+             isNonNegInt(data.totalAmountPaise) &&
+             isNonNegInt(data.paidAmountPaise) &&
+             isValidPaymentStatus(data.paymentStatus) &&
+             (!('paymentMethod' in data) || isValidPaymentMethod(data.paymentMethod)) &&
+             isValidInvoiceStatus(data.invoiceStatus) &&
+             data.revisionVersion is int && data.revisionVersion >= 1 &&
+             isValidStr(data.notes, 0, 1000) &&
+             data.confirmed is bool &&
+             isValidStr(data.partyNameSnapshot, 0, 200) &&
+             isValidStr(data.partyPhoneSnapshot, 0, 40) &&
+             isValidStr(data.partyAddressSnapshot, 0, 300) &&
+             (!('cancelledAtEpochMs' in data) || isNonNegInt(data.cancelledAtEpochMs)) &&
+             (!('cancellationReason' in data) || isValidStr(data.cancellationReason, 0, 500)) &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             isNonNegInt(data.localUpdatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidSalesInvoiceItem(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isNonNegInt(data.salesInvoiceLocalId) && data.salesInvoiceLocalId > 0 &&
+             isNonNegInt(data.productLocalId) && data.productLocalId > 0 &&
+             isNonNegInt(data.batchLocalId) && data.batchLocalId > 0 &&
+             data.quantityPieces is int && data.quantityPieces > 0 &&
+             isNonNegInt(data.unitPricePaise) &&
+             isNonNegInt(data.lineTotalPaise) &&
+             isValidStr(data.productNameSnapshot, 0, 200) &&
+             data.unitType in ['PIECE', 'BOX', 'CARTON'] &&
+             data.unitQuantity is int && data.unitQuantity > 0 &&
+             isNonNegInt(data.unitRatePaise) &&
+             isNonNegInt(data.itemDiscountPaise) &&
+             isNonNegInt(data.localUpdatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidSubledgerEntry(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isValidPartyType(data.partyType) &&
+             isNonNegInt(data.partyLocalId) && data.partyLocalId > 0 &&
+             data.entryType in ['OPENING_BALANCE', 'INVOICE', 'PAYMENT', 'CREDIT_NOTE', 'DEBIT_NOTE', 'ADJUSTMENT'] &&
+             isValidStr(data.referenceType, 1, 80) &&
+             data.referenceId is int &&
+             isNonNegInt(data.debitPaise) &&
+             isNonNegInt(data.creditPaise) &&
+             isNonNegInt(data.entryDateEpochMs) &&
+             isValidStr(data.notes, 0, 1000) &&
+             data.reversed is bool &&
+             isValidStr(data.operationRef, 0, 160) &&
+             (!('reversedAtEpochMs' in data) || isNonNegInt(data.reversedAtEpochMs)) &&
+             (!('reversalReason' in data) || isValidStr(data.reversalReason, 0, 500)) &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidPaymentAllocation(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isNonNegInt(data.paymentLocalId) && data.paymentLocalId > 0 &&
+             isValidPartyType(data.partyType) &&
+             isNonNegInt(data.partyLocalId) && data.partyLocalId > 0 &&
+             data.allocationType in ['INVOICE', 'OPENING_BALANCE', 'ADVANCE'] &&
+             (!('invoiceLocalId' in data) || isNonNegInt(data.invoiceLocalId)) &&
+             isNonNegInt(data.allocatedAmountPaise) &&
+             isNonNegInt(data.allocatedAtEpochMs) &&
+             isValidStr(data.notes, 0, 1000) &&
+             data.reversed is bool &&
+             data.fromAdvanceConsumption is bool &&
+             (!('reversedAtEpochMs' in data) || isNonNegInt(data.reversedAtEpochMs)) &&
+             (!('reversalReason' in data) || isValidStr(data.reversalReason, 0, 500)) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidSalesReturn(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isValidStr(data.returnNumber, 1, 80) &&
+             isNonNegInt(data.salesInvoiceLocalId) && data.salesInvoiceLocalId > 0 &&
+             isNonNegInt(data.customerLocalId) && data.customerLocalId > 0 &&
+             isNonNegInt(data.returnDateEpochMs) &&
+             isNonNegInt(data.totalReturnAmountPaise) &&
+             data.settlementType in ['CREDIT_NOTE', 'DEBIT_NOTE', 'ADVANCE', 'CASH_REFUND'] &&
+             (!('creditNoteLocalId' in data) || isNonNegInt(data.creditNoteLocalId)) &&
+             (!('refundRecordLocalId' in data) || isNonNegInt(data.refundRecordLocalId)) &&
+             (!('subledgerEntryLocalId' in data) || isNonNegInt(data.subledgerEntryLocalId)) &&
+             isValidStr(data.reason, 1, 500) &&
+             isValidStr(data.notes, 0, 1000) &&
+             (!('idempotencyKey' in data) || isValidStr(data.idempotencyKey, 1, 160)) &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidSalesReturnItem(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isNonNegInt(data.salesReturnLocalId) && data.salesReturnLocalId > 0 &&
+             (!('originalSalesInvoiceItemLocalId' in data) || isNonNegInt(data.originalSalesInvoiceItemLocalId)) &&
+             isNonNegInt(data.productLocalId) && data.productLocalId > 0 &&
+             isNonNegInt(data.batchLocalId) && data.batchLocalId > 0 &&
+             isValidStr(data.productNameSnapshot, 0, 200) &&
+             data.quantityPieces is int && data.quantityPieces > 0 &&
+             isNonNegInt(data.unitPricePaise) &&
+             isNonNegInt(data.lineTotalPaise) &&
+             data.condition in ['RESELLABLE', 'DAMAGED', 'MELTED', 'EXPIRED'] &&
+             data.restoredToSaleableStock is bool &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidPurchaseReturn(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isValidStr(data.returnNumber, 1, 80) &&
+             isNonNegInt(data.purchaseInvoiceLocalId) && data.purchaseInvoiceLocalId > 0 &&
+             isNonNegInt(data.supplierLocalId) && data.supplierLocalId > 0 &&
+             isNonNegInt(data.returnDateEpochMs) &&
+             isNonNegInt(data.totalReturnAmountPaise) &&
+             data.settlementType in ['CREDIT_NOTE', 'DEBIT_NOTE', 'ADVANCE', 'CASH_REFUND'] &&
+             (!('debitNoteLocalId' in data) || isNonNegInt(data.debitNoteLocalId)) &&
+             (!('refundRecordLocalId' in data) || isNonNegInt(data.refundRecordLocalId)) &&
+             (!('subledgerEntryLocalId' in data) || isNonNegInt(data.subledgerEntryLocalId)) &&
+             isValidStr(data.reason, 1, 500) &&
+             isValidStr(data.notes, 0, 1000) &&
+             (!('idempotencyKey' in data) || isValidStr(data.idempotencyKey, 1, 160)) &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidPurchaseReturnItem(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isNonNegInt(data.purchaseReturnLocalId) && data.purchaseReturnLocalId > 0 &&
+             (!('originalPurchaseInvoiceItemLocalId' in data) || isNonNegInt(data.originalPurchaseInvoiceItemLocalId)) &&
+             isNonNegInt(data.productLocalId) && data.productLocalId > 0 &&
+             isNonNegInt(data.batchLocalId) && data.batchLocalId > 0 &&
+             isValidStr(data.productNameSnapshot, 0, 200) &&
+             isValidStr(data.batchNumberSnapshot, 0, 100) &&
+             data.quantityPieces is int && data.quantityPieces > 0 &&
+             isNonNegInt(data.costPerPiecePaise) &&
+             isNonNegInt(data.lineTotalPaise) &&
+             data.condition in ['RESELLABLE', 'DAMAGED', 'MELTED', 'EXPIRED'] &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidCreditDebitNote(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isValidStr(data.noteNumber, 1, 80) &&
+             data.noteType in ['CREDIT_NOTE', 'DEBIT_NOTE'] &&
+             isValidPartyType(data.partyType) &&
+             isNonNegInt(data.partyLocalId) && data.partyLocalId > 0 &&
+             (!('linkedInvoiceLocalId' in data) || isNonNegInt(data.linkedInvoiceLocalId)) &&
+             (!('linkedReturnLocalId' in data) || isNonNegInt(data.linkedReturnLocalId)) &&
+             (!('subledgerEntryLocalId' in data) || isNonNegInt(data.subledgerEntryLocalId)) &&
+             isNonNegInt(data.amountPaise) && data.amountPaise > 0 &&
+             isNonNegInt(data.appliedAmountPaise) &&
+             data.status in ['OPEN', 'APPLIED', 'SETTLED', 'CANCELLED'] &&
+             isNonNegInt(data.issueDateEpochMs) &&
+             isValidStr(data.reason, 1, 500) &&
+             isValidStr(data.notes, 0, 1000) &&
+             (!('idempotencyKey' in data) || isValidStr(data.idempotencyKey, 1, 160)) &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             isNonNegInt(data.localUpdatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidRefundRecord(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isValidPartyType(data.partyType) &&
+             isNonNegInt(data.partyLocalId) && data.partyLocalId > 0 &&
+             data.sourceType in ['INVOICE_EDIT_EXCESS', 'INVOICE_CANCEL', 'SALES_RETURN', 'PURCHASE_RETURN', 'CREDIT_DEBIT_NOTE'] &&
+             data.sourceId is int &&
+             isNonNegInt(data.amountPaise) && data.amountPaise > 0 &&
+             isValidPaymentMethod(data.paymentMethod) &&
+             data.executionStatus in ['RECORDED_PENDING_PAYOUT', 'PAYOUT_EXECUTED'] &&
+             isValidStr(data.reason, 1, 500) &&
+             isValidStr(data.notes, 0, 1000) &&
+             isValidStr(data.referenceNumber, 0, 120) &&
+             (!('subledgerEntryLocalId' in data) || isNonNegInt(data.subledgerEntryLocalId)) &&
+             isNonNegInt(data.recordedAtEpochMs) &&
+             (!('executedAtEpochMs' in data) || isNonNegInt(data.executedAtEpochMs)) &&
+             (!('idempotencyKey' in data) || isValidStr(data.idempotencyKey, 1, 160)) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidAuditLog(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isValidStr(data.operationType, 1, 60) &&
+             isValidStr(data.entityType, 1, 80) &&
+             data.entityId is int &&
+             (!('relatedPartyType' in data) || isValidPartyType(data.relatedPartyType)) &&
+             (!('relatedPartyId' in data) || isNonNegInt(data.relatedPartyId)) &&
+             isValidStr(data.actorLabel, 1, 120) &&
+             isValidStr(data.reason, 1, 500) &&
+             isValidStr(data.beforeJson, 0, 16000) &&
+             isValidStr(data.afterJson, 0, 16000) &&
+             isValidStr(data.operationReference, 0, 160) &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidExpense(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             data.category in ['VEHICLE_FUEL', 'VEHICLE_MAINTENANCE', 'ELECTRICITY_COLD_STORAGE', 'ICE_SALT_PACKAGING', 'SHOP_RENT_OFFICE', 'SALARY_LABOUR', 'MISCELLANEOUS'] &&
+             isNonNegInt(data.amountPaise) && data.amountPaise > 0 &&
+             isNonNegInt(data.expenseDateEpochMs) &&
+             isValidPaymentMethod(data.paymentMethod) &&
+             isValidStr(data.referenceNumber, 0, 120) &&
+             isValidStr(data.notes, 0, 1000) &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             (!('deletedAtEpochMs' in data) || isNonNegInt(data.deletedAtEpochMs)) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidPaymentReminder(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isNonNegInt(data.customerLocalId) && data.customerLocalId > 0 &&
+             isValidStr(data.targetPhoneE164, 1, 30) &&
+             data.dueKind in ['INVOICE_BASED', 'ACCOUNT_DUE'] &&
+             data.status in ['DRAFT', 'WHATSAPP_OPENED', 'USER_CONFIRMED_SENT', 'FAILED'] &&
+             isNonNegInt(data.snapshotPendingInvoiceCount) &&
+             isNonNegInt(data.snapshotTotalInvoicePaise) &&
+             isNonNegInt(data.snapshotTotalInvoicePendingPaise) &&
+             isNonNegInt(data.snapshotNetOutstandingPaise) &&
+             isValidStr(data.renderedMessage, 1, 4000) &&
+             (!('whatsappPackageUsed' in data) || isValidStr(data.whatsappPackageUsed, 0, 120)) &&
+             (!('failureReason' in data) || isValidStr(data.failureReason, 0, 500)) &&
+             data.awaitingUserConfirmation is bool &&
+             isNonNegInt(data.localCreatedAtMs) &&
+             (!('whatsappOpenedAtEpochMs' in data) || isNonNegInt(data.whatsappOpenedAtEpochMs)) &&
+             (!('confirmedSentAtEpochMs' in data) || isNonNegInt(data.confirmedSentAtEpochMs)) &&
+             isNonNegInt(data.localUpdatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidPaymentReminderInvoice(data, userId) {
+      return data.userId == userId &&
+             isNonNegInt(data.localId) && data.localId > 0 &&
+             isNonNegInt(data.reminderLocalId) && data.reminderLocalId > 0 &&
+             isNonNegInt(data.salesInvoiceLocalId) && data.salesInvoiceLocalId > 0 &&
+             isNonNegInt(data.invoiceDateSnapshotMs) &&
+             isNonNegInt(data.totalAmountPaiseSnapshot) &&
+             isNonNegInt(data.pendingAmountPaiseSnapshot) &&
+             isValidHash(data.contentHash);
+    }
+
+    function isValidAppSetting(data, userId) {
+      return data.userId == userId &&
+             isValidStr(data.settingKey, 1, 100) &&
+             isValidStr(data.settingValue, 0, 2000) &&
+             isNonNegInt(data.localUpdatedAtMs) &&
+             isValidHash(data.contentHash);
+    }
+
+    // =========================================================
+    // User-Scoped Multi-Tenant Collections (/users/{userId}/...)
+    // =========================================================
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) && isValidId(userId) &&
+                       incoming().keys().hasAll(['userId', 'schemaVersion', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'email', 'displayName', 'businessName', 'schemaVersion', 'lastSyncAtEpochMs', 'createdAt', 'updatedAt']) &&
+                       isValidTimestamp(incoming().createdAt) &&
+                       isValidTimestamp(incoming().updatedAt) &&
+                       isValidWorkspace(incoming(), userId);
+      allow update: if isOwner(userId) && isValidId(userId) &&
+                       isValidWorkspace(incoming(), userId) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       isValidTimestamp(incoming().updatedAt) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'businessName', 'schemaVersion', 'lastSyncAtEpochMs', 'updatedAt']);
+      allow delete: if false;
+
+      match /products/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'name', 'sku', 'category', 'defaultPurchasePricePaise', 'defaultSellingPricePaise', 'minStockLevelPieces', 'piecesPerBox', 'boxesPerCarton', 'active', 'localCreatedAtMs', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'name', 'sku', 'category', 'defaultPurchasePricePaise', 'defaultSellingPricePaise', 'minStockLevelPieces', 'piecesPerBox', 'boxesPerCarton', 'active', 'localCreatedAtMs', 'localUpdatedAtMs', 'deletedAtEpochMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidProduct(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidProduct(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().localUpdatedAtMs >= existing().localUpdatedAtMs &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'sku', 'category', 'defaultPurchasePricePaise', 'defaultSellingPricePaise', 'minStockLevelPieces', 'piecesPerBox', 'boxesPerCarton', 'active', 'localUpdatedAtMs', 'deletedAtEpochMs', 'contentHash', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      match /suppliers/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'name', 'contactPerson', 'phoneNumber', 'address', 'openingBalancePaise', 'openingBalanceDateEpochMs', 'creditTermsDays', 'creditLimitPaise', 'active', 'localCreatedAtMs', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'name', 'contactPerson', 'phoneNumber', 'address', 'openingBalancePaise', 'openingBalanceDateEpochMs', 'creditTermsDays', 'creditLimitPaise', 'active', 'localCreatedAtMs', 'localUpdatedAtMs', 'deletedAtEpochMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidSupplier(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidSupplier(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().localUpdatedAtMs >= existing().localUpdatedAtMs &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'contactPerson', 'phoneNumber', 'address', 'openingBalancePaise', 'openingBalanceDateEpochMs', 'creditTermsDays', 'creditLimitPaise', 'active', 'localUpdatedAtMs', 'deletedAtEpochMs', 'contentHash', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      match /customers/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'shopName', 'ownerName', 'phoneNumber', 'address', 'openingBalancePaise', 'openingBalanceDateEpochMs', 'creditLimitPaise', 'paymentTermsDays', 'active', 'localCreatedAtMs', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'shopName', 'ownerName', 'phoneNumber', 'address', 'openingBalancePaise', 'openingBalanceDateEpochMs', 'creditLimitPaise', 'paymentTermsDays', 'active', 'localCreatedAtMs', 'localUpdatedAtMs', 'deletedAtEpochMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidCustomer(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidCustomer(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().localUpdatedAtMs >= existing().localUpdatedAtMs &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['shopName', 'ownerName', 'phoneNumber', 'address', 'openingBalancePaise', 'openingBalanceDateEpochMs', 'creditLimitPaise', 'paymentTermsDays', 'active', 'localUpdatedAtMs', 'deletedAtEpochMs', 'contentHash', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      match /customer_product_prices/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'customerLocalId', 'productLocalId', 'customSellingPricePaise', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'customerLocalId', 'productLocalId', 'customSellingPricePaise', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidCustomerPrice(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidCustomerPrice(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt);
+        allow delete: if isOwner(userId) && isValidId(docId);
+      }
+
+      match /product_suppliers/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'productLocalId', 'supplierLocalId', 'supplierProductCode', 'purchaseCostPaise', 'preferredSupplier', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'productLocalId', 'supplierLocalId', 'supplierProductCode', 'purchaseCostPaise', 'preferredSupplier', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidProductSupplier(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidProductSupplier(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt);
+        allow delete: if isOwner(userId) && isValidId(docId);
+      }
+
+      match /product_batches/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'productLocalId', 'batchNumber', 'purchaseDateEpochMs', 'expiryDateEpochMs', 'initialQuantityPieces', 'currentQuantityPieces', 'purchaseCostPerPiecePaise', 'active', 'localCreatedAtMs', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'productLocalId', 'batchNumber', 'purchaseInvoiceLocalId', 'purchaseDateEpochMs', 'expiryDateEpochMs', 'initialQuantityPieces', 'currentQuantityPieces', 'purchaseCostPerPiecePaise', 'active', 'localCreatedAtMs', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidBatch(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidBatch(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().productLocalId == existing().productLocalId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().localUpdatedAtMs >= existing().localUpdatedAtMs &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['batchNumber', 'expiryDateEpochMs', 'initialQuantityPieces', 'currentQuantityPieces', 'purchaseCostPerPiecePaise', 'active', 'localUpdatedAtMs', 'contentHash', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      // Stock Movements: Strictly Append-Only (Immutable)
+      match /stock_movements/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'productLocalId', 'movementType', 'quantityPieces', 'unitCostPaise', 'referenceType', 'referenceId', 'movementDateEpochMs', 'notes', 'localCreatedAtMs', 'contentHash', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'productLocalId', 'batchLocalId', 'movementType', 'quantityPieces', 'unitCostPaise', 'referenceType', 'referenceId', 'movementDateEpochMs', 'notes', 'localCreatedAtMs', 'contentHash', 'createdAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidStockMovement(incoming(), userId);
+        allow update, delete: if false;
+      }
+
+      match /purchase_invoices/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'invoiceNumber', 'supplierLocalId', 'invoiceDateEpochMs', 'dueDateEpochMs', 'subtotalPaise', 'discountType', 'discountValueRaw', 'discountAmountPaise', 'additionalChargesPaise', 'totalAmountPaise', 'paidAmountPaise', 'paymentStatus', 'invoiceStatus', 'revisionVersion', 'notes', 'confirmed', 'partyNameSnapshot', 'partyPhoneSnapshot', 'partyAddressSnapshot', 'localCreatedAtMs', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'invoiceNumber', 'supplierLocalId', 'invoiceDateEpochMs', 'dueDateEpochMs', 'subtotalPaise', 'discountType', 'discountValueRaw', 'discountAmountPaise', 'additionalChargesPaise', 'totalAmountPaise', 'paidAmountPaise', 'paymentStatus', 'paymentMethod', 'invoiceStatus', 'revisionVersion', 'notes', 'confirmed', 'partyNameSnapshot', 'partyPhoneSnapshot', 'partyAddressSnapshot', 'cancelledAtEpochMs', 'cancellationReason', 'localCreatedAtMs', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidPurchaseInvoice(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidPurchaseInvoice(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().invoiceNumber == existing().invoiceNumber &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().revisionVersion >= existing().revisionVersion &&
+                         incoming().localUpdatedAtMs >= existing().localUpdatedAtMs &&
+                         (existing().invoiceStatus != 'CANCELLED' || incoming().invoiceStatus == 'CANCELLED') &&
+                         isValidTimestamp(incoming().updatedAt);
+        allow delete: if false;
+      }
+
+      match /purchase_invoice_items/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'purchaseInvoiceLocalId', 'productLocalId', 'batchNumber', 'expiryDateEpochMs', 'quantityPieces', 'costPerPiecePaise', 'lineTotalPaise', 'productNameSnapshot', 'unitType', 'unitQuantity', 'unitRatePaise', 'itemDiscountPaise', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'purchaseInvoiceLocalId', 'productLocalId', 'batchNumber', 'expiryDateEpochMs', 'quantityPieces', 'costPerPiecePaise', 'lineTotalPaise', 'productNameSnapshot', 'unitType', 'unitQuantity', 'unitRatePaise', 'itemDiscountPaise', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidPurchaseInvoiceItem(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidPurchaseInvoiceItem(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt);
+        allow delete: if isOwner(userId) && isValidId(docId);
+      }
+
+      match /sales_invoices/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'invoiceNumber', 'customerLocalId', 'invoiceDateEpochMs', 'dueDateEpochMs', 'subtotalPaise', 'discountType', 'discountValueRaw', 'discountAmountPaise', 'additionalChargesPaise', 'totalAmountPaise', 'paidAmountPaise', 'paymentStatus', 'invoiceStatus', 'revisionVersion', 'notes', 'confirmed', 'partyNameSnapshot', 'partyPhoneSnapshot', 'partyAddressSnapshot', 'localCreatedAtMs', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'invoiceNumber', 'customerLocalId', 'invoiceDateEpochMs', 'dueDateEpochMs', 'subtotalPaise', 'discountType', 'discountValueRaw', 'discountAmountPaise', 'additionalChargesPaise', 'totalAmountPaise', 'paidAmountPaise', 'paymentStatus', 'paymentMethod', 'invoiceStatus', 'revisionVersion', 'notes', 'confirmed', 'partyNameSnapshot', 'partyPhoneSnapshot', 'partyAddressSnapshot', 'cancelledAtEpochMs', 'cancellationReason', 'localCreatedAtMs', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidSalesInvoice(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidSalesInvoice(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().invoiceNumber == existing().invoiceNumber &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().revisionVersion >= existing().revisionVersion &&
+                         incoming().localUpdatedAtMs >= existing().localUpdatedAtMs &&
+                         (existing().invoiceStatus != 'CANCELLED' || incoming().invoiceStatus == 'CANCELLED') &&
+                         isValidTimestamp(incoming().updatedAt);
+        allow delete: if false;
+      }
+
+      match /sales_invoice_items/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'salesInvoiceLocalId', 'productLocalId', 'batchLocalId', 'quantityPieces', 'unitPricePaise', 'lineTotalPaise', 'productNameSnapshot', 'unitType', 'unitQuantity', 'unitRatePaise', 'itemDiscountPaise', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'salesInvoiceLocalId', 'productLocalId', 'batchLocalId', 'quantityPieces', 'unitPricePaise', 'lineTotalPaise', 'productNameSnapshot', 'unitType', 'unitQuantity', 'unitRatePaise', 'itemDiscountPaise', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidSalesInvoiceItem(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidSalesInvoiceItem(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt);
+        allow delete: if isOwner(userId) && isValidId(docId);
+      }
+
+      // Subledger: Amounts immutable; ONLY reversal state transition permitted!
+      match /subledger_entries/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'partyType', 'partyLocalId', 'entryType', 'referenceType', 'referenceId', 'debitPaise', 'creditPaise', 'entryDateEpochMs', 'notes', 'reversed', 'operationRef', 'localCreatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'partyType', 'partyLocalId', 'entryType', 'referenceType', 'referenceId', 'debitPaise', 'creditPaise', 'entryDateEpochMs', 'notes', 'reversed', 'operationRef', 'reversedAtEpochMs', 'reversalReason', 'localCreatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidSubledgerEntry(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidSubledgerEntry(incoming(), userId) &&
+                         !existing().reversed &&
+                         incoming().reversed == true &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().partyType == existing().partyType &&
+                         incoming().partyLocalId == existing().partyLocalId &&
+                         incoming().entryType == existing().entryType &&
+                         incoming().debitPaise == existing().debitPaise &&
+                         incoming().creditPaise == existing().creditPaise &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['reversed', 'reversedAtEpochMs', 'reversalReason', 'contentHash', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      // Payment Allocations: Amounts immutable; ONLY reversal state transition permitted!
+      match /payment_allocations/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'paymentLocalId', 'partyType', 'partyLocalId', 'allocationType', 'allocatedAmountPaise', 'allocatedAtEpochMs', 'notes', 'reversed', 'fromAdvanceConsumption', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'paymentLocalId', 'partyType', 'partyLocalId', 'allocationType', 'invoiceLocalId', 'allocatedAmountPaise', 'allocatedAtEpochMs', 'notes', 'reversed', 'fromAdvanceConsumption', 'reversedAtEpochMs', 'reversalReason', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidPaymentAllocation(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidPaymentAllocation(incoming(), userId) &&
+                         !existing().reversed &&
+                         incoming().reversed == true &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().allocatedAmountPaise == existing().allocatedAmountPaise &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['reversed', 'reversedAtEpochMs', 'reversalReason', 'contentHash', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      // Returns & Return Items: Immutable once created (append-only)
+      match /sales_returns/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'returnNumber', 'salesInvoiceLocalId', 'customerLocalId', 'returnDateEpochMs', 'totalReturnAmountPaise', 'settlementType', 'reason', 'notes', 'localCreatedAtMs', 'contentHash', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'returnNumber', 'salesInvoiceLocalId', 'customerLocalId', 'returnDateEpochMs', 'totalReturnAmountPaise', 'settlementType', 'creditNoteLocalId', 'refundRecordLocalId', 'subledgerEntryLocalId', 'reason', 'notes', 'idempotencyKey', 'localCreatedAtMs', 'contentHash', 'createdAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidSalesReturn(incoming(), userId);
+        allow update, delete: if false;
+      }
+
+      match /sales_return_items/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'salesReturnLocalId', 'productLocalId', 'batchLocalId', 'productNameSnapshot', 'quantityPieces', 'unitPricePaise', 'lineTotalPaise', 'condition', 'restoredToSaleableStock', 'contentHash', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'salesReturnLocalId', 'originalSalesInvoiceItemLocalId', 'productLocalId', 'batchLocalId', 'productNameSnapshot', 'quantityPieces', 'unitPricePaise', 'lineTotalPaise', 'condition', 'restoredToSaleableStock', 'contentHash', 'createdAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidSalesReturnItem(incoming(), userId);
+        allow update, delete: if false;
+      }
+
+      match /purchase_returns/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'returnNumber', 'purchaseInvoiceLocalId', 'supplierLocalId', 'returnDateEpochMs', 'totalReturnAmountPaise', 'settlementType', 'reason', 'notes', 'localCreatedAtMs', 'contentHash', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'returnNumber', 'purchaseInvoiceLocalId', 'supplierLocalId', 'returnDateEpochMs', 'totalReturnAmountPaise', 'settlementType', 'debitNoteLocalId', 'refundRecordLocalId', 'subledgerEntryLocalId', 'reason', 'notes', 'idempotencyKey', 'localCreatedAtMs', 'contentHash', 'createdAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidPurchaseReturn(incoming(), userId);
+        allow update, delete: if false;
+      }
+
+      match /purchase_return_items/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'purchaseReturnLocalId', 'productLocalId', 'batchLocalId', 'productNameSnapshot', 'batchNumberSnapshot', 'quantityPieces', 'costPerPiecePaise', 'lineTotalPaise', 'condition', 'contentHash', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'purchaseReturnLocalId', 'originalPurchaseInvoiceItemLocalId', 'productLocalId', 'batchLocalId', 'productNameSnapshot', 'batchNumberSnapshot', 'quantityPieces', 'costPerPiecePaise', 'lineTotalPaise', 'condition', 'contentHash', 'createdAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidPurchaseReturnItem(incoming(), userId);
+        allow update, delete: if false;
+      }
+
+      // Credit/Debit Notes: Terminal states SETTLED and CANCELLED locked
+      match /credit_debit_notes/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'noteNumber', 'noteType', 'partyType', 'partyLocalId', 'amountPaise', 'appliedAmountPaise', 'status', 'issueDateEpochMs', 'reason', 'notes', 'localCreatedAtMs', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'noteNumber', 'noteType', 'partyType', 'partyLocalId', 'linkedInvoiceLocalId', 'linkedReturnLocalId', 'subledgerEntryLocalId', 'amountPaise', 'appliedAmountPaise', 'status', 'issueDateEpochMs', 'reason', 'notes', 'idempotencyKey', 'localCreatedAtMs', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidCreditDebitNote(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidCreditDebitNote(incoming(), userId) &&
+                         existing().status in ['OPEN', 'APPLIED'] &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().noteNumber == existing().noteNumber &&
+                         incoming().amountPaise == existing().amountPaise &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['appliedAmountPaise', 'status', 'subledgerEntryLocalId', 'notes', 'localUpdatedAtMs', 'contentHash', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      // Manual Refund Records: Terminal PAYOUT_EXECUTED locked; amount immutable
+      match /refund_records/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'partyType', 'partyLocalId', 'sourceType', 'sourceId', 'amountPaise', 'paymentMethod', 'executionStatus', 'reason', 'notes', 'referenceNumber', 'recordedAtEpochMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'partyType', 'partyLocalId', 'sourceType', 'sourceId', 'amountPaise', 'paymentMethod', 'executionStatus', 'reason', 'notes', 'referenceNumber', 'subledgerEntryLocalId', 'recordedAtEpochMs', 'executedAtEpochMs', 'idempotencyKey', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidRefundRecord(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidRefundRecord(incoming(), userId) &&
+                         existing().executionStatus == 'RECORDED_PENDING_PAYOUT' &&
+                         incoming().executionStatus == 'PAYOUT_EXECUTED' &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().amountPaise == existing().amountPaise &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['paymentMethod', 'executionStatus', 'referenceNumber', 'subledgerEntryLocalId', 'notes', 'executedAtEpochMs', 'contentHash', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      // Permanent Financial Audit History: Strictly Create & Read Only (NEVER update or delete)
+      match /financial_audit_logs/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'operationType', 'entityType', 'entityId', 'actorLabel', 'reason', 'beforeJson', 'afterJson', 'operationReference', 'localCreatedAtMs', 'contentHash', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'operationType', 'entityType', 'entityId', 'relatedPartyType', 'relatedPartyId', 'actorLabel', 'reason', 'beforeJson', 'afterJson', 'operationReference', 'localCreatedAtMs', 'contentHash', 'createdAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidAuditLog(incoming(), userId);
+        allow update, delete: if false;
+      }
+
+      match /expenses/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'category', 'amountPaise', 'expenseDateEpochMs', 'paymentMethod', 'referenceNumber', 'notes', 'localCreatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'category', 'amountPaise', 'expenseDateEpochMs', 'paymentMethod', 'referenceNumber', 'notes', 'localCreatedAtMs', 'deletedAtEpochMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidExpense(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidExpense(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['category', 'amountPaise', 'expenseDateEpochMs', 'paymentMethod', 'referenceNumber', 'notes', 'deletedAtEpochMs', 'contentHash', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      match /payment_reminders/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'customerLocalId', 'targetPhoneE164', 'dueKind', 'status', 'snapshotPendingInvoiceCount', 'snapshotTotalInvoicePaise', 'snapshotTotalInvoicePendingPaise', 'snapshotNetOutstandingPaise', 'renderedMessage', 'awaitingUserConfirmation', 'localCreatedAtMs', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'customerLocalId', 'targetPhoneE164', 'dueKind', 'status', 'snapshotPendingInvoiceCount', 'snapshotTotalInvoicePaise', 'snapshotTotalInvoicePendingPaise', 'snapshotNetOutstandingPaise', 'renderedMessage', 'whatsappPackageUsed', 'failureReason', 'awaitingUserConfirmation', 'localCreatedAtMs', 'whatsappOpenedAtEpochMs', 'confirmedSentAtEpochMs', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidPaymentReminder(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidPaymentReminder(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().localId == existing().localId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt);
+        allow delete: if false;
+      }
+
+      match /payment_reminder_invoices/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'localId', 'reminderLocalId', 'salesInvoiceLocalId', 'invoiceDateSnapshotMs', 'totalAmountPaiseSnapshot', 'pendingAmountPaiseSnapshot', 'contentHash', 'createdAt']) &&
+                         incoming().keys().hasOnly(['userId', 'localId', 'reminderLocalId', 'salesInvoiceLocalId', 'invoiceDateSnapshotMs', 'totalAmountPaiseSnapshot', 'pendingAmountPaiseSnapshot', 'contentHash', 'createdAt']) &&
+                         isValidTimestamp(incoming().createdAt) &&
+                         isValidPaymentReminderInvoice(incoming(), userId);
+        allow update, delete: if false;
+      }
+
+      match /app_settings/{docId} {
+        allow get: if isOwner(userId) && isValidId(docId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(docId) &&
+                         incoming().keys().hasAll(['userId', 'settingKey', 'settingValue', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'settingKey', 'settingValue', 'localUpdatedAtMs', 'contentHash', 'createdAt', 'updatedAt']) &&
+                         isValidTimestamp(incoming().createdAt) && isValidTimestamp(incoming().updatedAt) &&
+                         isValidAppSetting(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(docId) &&
+                         isValidAppSetting(incoming(), userId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().settingKey == existing().settingKey &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTimestamp(incoming().updatedAt);
+        allow delete: if isOwner(userId) && isValidId(docId);
+      }
+    }
+  }
+}
